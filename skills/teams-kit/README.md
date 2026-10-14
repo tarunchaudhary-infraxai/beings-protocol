@@ -5,8 +5,11 @@ Gives a Being its own Microsoft 365 identity and a message pipeline that runs un
 ```
 being-teams (loop, every 30 s, no model)
  ├─ teams-presence.mjs      green while running, Offline within 15 min after it stops
- ├─ teams-detect.mjs        new messages addressed to the Being → state/queue.jsonl
- │    └─ being-handle triage   fast model, read-only, one call per chat: none / react / short reply + needsWork → teams-ack.mjs
+ ├─ fast path              webhook kick → pre-connected teams-detect (--wait) → queue, 👀 (pre-connected teams-seen), triage
+ ├─ fast-warm.mjs           warm fast-model process per lane (triage + voice), restarted on death / N turns / new day
+ ├─ teams-detect.mjs        new messages addressed to the Being → state/queue.jsonl (30 s sweep: the catch-up)
+ │    └─ being-handle triage   fast model, read-only, one call per chat: none / react / reply (a direct answer, or an ack
+ │                             + needsWork) → teams-ack.mjs, signed in while the model decides
  │         └─ being-handle work   Claude Code daily session per lane (owner, each teammate chat), own send grant per run
  │              ├─ being-job agent|codex|run   long work, detached; wakes the session to verify and report
  │              └─ voice pass   fast model rewords queued replies; numbers and links must survive
@@ -23,9 +26,12 @@ for the day without one person's run ever resuming another's. Teammate runs are 
 |---|---|
 | `being-teams` | runner: `up / down / status / logs / handler / inbox / autostart on` |
 | `being-handle` | `triage / work / voice / warm` stages; all prompt text lives here |
+| `fast-warm.mjs` | long-lived fast-model process per lane for triage and voice (being-teams runs it; cold call as fallback) |
+| `fifo-wait.mjs` | trigger FIFO for the pre-connected fast-path standbys |
 | `being-job` | `agent / codex / run` background jobs; `list / status / log` |
 | `being-blocker` | tell the owner at once that something is blocked |
 | `being-watchdog`, `being-status` | stall alerts; live "what is running" view (also fed to triage) |
+| `being-sessions`, `being-steer`, `being-board`, `mesh.py` | session mesh: named live sessions, steering (live or a durable note), today's board |
 | `teams-*.mjs`, `mail.mjs` | Graph calls: detect, read, send, ack, presence, mailbox |
 | `draft-for-owner.mjs`, `approve.mjs`, `approval.mjs` | write as the owner only via a draft the owner approves in Teams |
 | `scope.mjs`, `secrets.mjs` | per-run send grants; outgoing-text secret filter |
@@ -38,6 +44,8 @@ for the day without one person's run ever resuming another's. Teammate runs are 
 
 **Host: Linux.** The runner and handler use `flock`, `setsid`, GNU `find`/`readlink` and systemd user units; on macOS they
 fail partly and quietly. `install.sh --with teams-kit` checks for them. Needs Node.js 20+ and Python 3.10+.
+Claude Code 2.1.295+ is needed for the teammate fence to block when it fails or times out (`onFailure: block`); older
+clients ignore that key, so a fence error or timeout lets the call through.
 
 1. **Accounts.** A licensed M365 user for the Being, and an Entra app registration: public client, "Allow public client
    flows" on, delegated permissions `Chat.ReadWrite ChatMessage.Send Chat.Create User.Read Presence.ReadWrite Mail.ReadWrite
@@ -58,11 +66,27 @@ fail partly and quietly. `install.sh --with teams-kit` checks for them. Needs No
    If no second user is possible, set `BEING_SINGLE_USER_ACK=1` (owner sign-in off) to accept that knowingly (GUARDRAILS.md).
 7. **Run:** `./being-teams up` (or `autostart on` for a systemd user unit). `./being-teams inbox` shows traffic.
 
+## OS isolation (two-user layout)
+Model runs behind kernel boundaries instead of the regex fence: `being-launch` starts every model client in bubblewrap,
+optionally as a separate OS user (`BEING_ISOLATION=off|bwrap|users`). The kit is reached only through a per-run
+`kit-broker` socket, and teammate lanes see only their own lane dir (`team-sync`). Root half: `isolation/setup-users.sh`.
+Kit half: `isolation/migrate.sh`. Checks: `isolation/verify.sh`. Undo: `isolation/rollback.sh`. Test without root:
+`isolation/test-sandbox.sh`. Design, modes and credentials: `isolation/README.md`.
+
 ## Talking to it
-- People message the Being in Teams. In groups it answers only when @mentioned or named.
+- People message the Being in Teams. In groups it wakes when @mentioned or named, for any message from the owner
+  (`BEING_GROUP_OWNER_WAKES=0` turns that off), and for a sender in a live thread with it (the Being posted there in the
+  last 15 min and that sender spoke to it in the last 30). Triage still answers "none" to chatter that is not for it.
+- Routing guards: a message that already has a real reply is never run
+  again (retries and second sessions); a teammate/group run that ends without replying to a question is reported to the
+  owner lane as a `[no reply]` task; a teammate lane's `being-board add handoff` becomes a task in the owner lane; the
+  owner's own group messages reach the owner lane as context (no run, no reply from it). Teammate lanes see the open items
+  of `.beings/ops/team-pipeline.md` (`BEING_TEAM_PIPELINE`) only if it says `share: team` (soul.py team-work; WORK.md).
 - The owner approves drafts by typing `send D3`, `edit D3 <text>`, `skip D3`, `save D3` (email: leave in Outlook Drafts)
   in their 1:1 with the Being. The prompt names the real target chat and a fingerprint; approval is re-checked in Graph.
-- "Status?" is answered by triage from `being-status` in seconds, even while a long run is busy.
+- Quick questions ("status?", "did X reply?", "is it done?") get the real answer in the first reply, from `being-status`
+  and the chat's recent messages, in a few seconds, even while a long run is busy. Real work gets a short acknowledgement
+  first and the result later. Triage marks a direct answer `answered: true` (ack-schema.json).
 
 ## Model routing
 `BEING_FAST_*` drive triage and voice (low effort, seconds); `BEING_SESSION_MODEL` drives the work session;
@@ -110,39 +134,113 @@ teams-send-dm.mjs --chat <chatId> < msg
     --attach-url <url> [--attach-name <n>]  file card for a OneDrive/SharePoint item
     --verbatim  skip the voice pass | --whoami  verify the sender token
     Scope comes from the grant named by BEING_SEND_TOKEN (scope.mjs): full | owner-only | chats:<id>,<id>.
-    No valid grant = owner-only. Blocked target, a prompt fingerprint or secret-looking text: exit 3, nothing sent.
+    No grant = owner-only; a bad or expired one = none (refused). Blocked target, a prompt fingerprint or secret-looking text: exit 3, nothing sent.
     With BEING_VOICE=fast the message is queued in $BEING_STATE_DIR/outbox and sent after the voice pass.
-teams-ack.mjs < {"messages":[detect hits],"actions":[{chatId,messageId,action,text,emoji}]}
+teams-ack.mjs [--preconnect] < {"messages":[detect hits],"actions":[{chatId,messageId,action,text,answered,needsWork,emoji}]}
     action none | react | reply. With no decision (triage failed) a 1:1 message gets a 👍. exit 1 if any failed.
+    --preconnect signs in before reading stdin (being-handle starts it while the model is deciding).
+teams-detect.mjs --notified <hook queue.jsonl> <offset-file> [--wait <fifo>]
+    webhook fast path: only the messages the notifications named. --wait signs in first and reads the queue when "go"
+    arrives on the FIFO; teams-seen.mjs --wait <fifo> likewise takes its JSON as one line (being-teams fastpath).
+fast-warm.mjs serve | ask <lane> <timeoutMs> <system-prompt file> < turn | prewarm <lane> <system-prompt file>
+    being-teams keeps `serve` running (state/fast-warm.sock, log state/fast-warm.log). One `claude -p --input-format
+    stream-json` per lane (lean flags, BEING_FAST_MODEL / _EFFORT); a turn over its timeout kills the process and
+    being-handle falls back to the cold call. BEING_FAST_WARM=0 off, BEING_FAST_WARM_TIMEOUT_MS (15000; voice 3x),
+    BEING_FAST_WARM_TURNS (30 per process), BEING_FAST_WARM_IDLE_MIN (teammate lanes, 120; owner 6 h).
 teams-presence.mjs available | offline | status
     available lasts 15 min; the runner refreshes it every ~5 min, so Teams drops to Offline when it stops.
 teams-login-device.mjs --upn <user@your-tenant> --cache <file> [--scopes a,b,c]
     The owner's UPN or cache is refused unless BEING_OWNER_DELEGATE=1 in .env (then a warning is printed).
 mail.mjs --list [--top N] [--unread] | --search <text> [--top N] | --read <id> | --attachments <id> [--save <dir>]
 mail.mjs --detect <ISO8601-watermark>      exit 0 none, 10 new (JSON on stdout), 1 error
-mail.mjs --send --to a[,b] --subject S [--cc c] [--attach f1,f2] < body.html   (each file < 3 MB)
+mail.mjs --send --to a[,b] --subject S [--cc c] [--attach f1,f2] [--inline f=cid] < body.html   (files < 3 MB, inline < 1 MB)
+    Attachment bytes go through the same secret scan as the subject and body.
 draft-for-owner.mjs --chat <owner chatId> [--re "<their message>"] < draft.md     target label resolved from Graph
     Refused: a draft for the owner's 1:1 with the Being, or text that is itself a "send Dn" command.
 draft-for-owner.mjs --mail --to a[,b] [--cc c] --subject S [--reply-to <owner messageId>] [--attach /abs/f] < draft.md
 approve.mjs send|edit|skip|save <Dn> --chat <owner 1:1 chatId> --msg <owner's command messageId>
     Called by being-handle for commands the owner typed; re-reads the command and prompt from Graph (GUARDRAILS.md).
 scope.mjs mint <full|owner-only|chats:id,...> [ttlHours] | revoke < token | show | owner-read-ok | prune
-    mint is the handler's: it needs state/handler.key (0600). Grants without its HMAC are owner-only. In the two-user
+    mint is the handler's: it needs state/handler.key (0600). Grants without its HMAC are refused (none). In the two-user
     layout only the kit user can read the key; on a same-user host any run can, so mint cannot be restricted (doctor fails).
 being-job agent <name> [--small] --notify <chatId> "<self-contained task>"   headless Claude Code
 being-job codex <name> [--network] --notify <chatId> "<task>"               Codex, workspace-write sandbox, no network unless --network
     BEING_JOB_ADD_DIRS=/a:/b   extra dirs Codex may write (e.g. a repo worktree)
 being-job run <name> --notify <chatId> -- <command...>                     a plain command
 being-job list | status <id> | log <id> [n]     from a teammate chat's run: only that chat's own jobs (others exit 3)
-being-status [--actions N] [--chat <chatId>]   live view; --chat: that chat's queue and jobs only (fed to its triage)
+being-status [--actions N] [--triage] [--chat <chatId>]   live view incl. Sessions and Board; --triage: sessions as one line
+    (owner triage); --chat: that chat's queue, jobs, sessions and board lines only (fed to its triage)
+being-sessions [--all] [--json]     live sessions: name, kind (work/warm/job/heartbeat/other), lane, pid, state alive|idle|ended
+    Names: nova-owner, nova-team-<first name>, nova-delegate, nova-warm-<lane>, nova-job-<name>, nova-heartbeat (prefix =
+    BEING_NAME). Registry state/sessions.json, written at launch/exit by being-handle, being-job and fast-warm.mjs, checked by pid.
+being-steer <name> "<message>"      running → live through Claude Code session messaging (a relay with only SendMessage, in the
+    target's permission mode); otherwise, or if that fails → a note in that lane's queue (addressedBy "note"), which triage hands
+    straight to the lane's work run (no ack). A live note the run never read goes the durable way when it ends. Jobs: live only,
+    else recorded in the job file for its result handler. Teammate lanes: own lane only. exit 0 ok | 2 unknown | 3 refused | 4 unreachable
+being-board add promise|done|handoff "<one line>" [--lane <name>] | list [N]   today's board (state/board.jsonl), lane-scoped
 being-blocker "<task>" "<what failed, with the exact error>" "<what you need from the owner>"
 being-teams doctor     file modes; FAIL (exit 1) on a same-user host, louder if an owner token is readable, or if the
                        model user can reach .env, caches, grants or the handler key. WARN instead with
                        BEING_SINGLE_USER_ACK=1 and no owner sign-in
-being-handle warm | triage | work | voice
+being-handle warm | triage | work | work-lane <lane> | voice
     triage: queue.jsonl → owner decisions to approve.mjs → one fast-model call per chat, in its lane's session → acks → work.jsonl
-            (fast client: no file tools, empty working directory; everything it needs is in the prompt)
-    work:   work.jsonl → one call per lane in that lane's session (owner, delegate, each teammate chat; job results go back
-            to the lane that started the job), each with a fresh grant revoked at the end; teammate runs are fenced
+            (fast client: no file tools, empty working directory; everything it needs is in the prompt: LIVE STATE from
+            being-status, RECENT CHAT from the comms log for that chat only, the messages). Warm lane process first
+            (fast-warm.mjs), cold `claude -p` if it is missing, slow or fails. Code guards: no reaction on a question.
+    work:   work.jsonl → per-lane inboxes (state/lanes/) → one `work-lane` runner per lane, in parallel, each under its own lock;
+            one call per batch in that lane's session (owner, delegate, each teammate chat; job results and notes go to their
+            lane), each with a fresh grant revoked at the end; teammate runs are fenced
     voice:  queued messages → fast model rewords, per lane → sent (after every work run)
 ```
+
+## Script notes
+
+Details moved out of the script headers, so comments stay short.
+
+- **being-handle locks.** Shared files keep their own flock: `work-queue.lock` (work.jsonl and the lane inboxes),
+  `enqueue.lock` (queue.jsonl), `voice.lock` (the outbox flush), the sessions/notes/board locks (mesh.py) and
+  `comms.jsonl.lock`. Every claude launch carries a readable session name (mesh.py, being-sessions).
+- **being-board.** The owner side sees every line. A teammate chat's run writes and sees only lines tagged with its own
+  lane; an owner-side line tagged with a teammate lane is visible to that teammate, so keep it to their task.
+- **being-deadman.** Run by its own timer (`<being>-deadman.timer`), never by the loop. Checks: the unit is active, the
+  sweep watermark is fresh, loop.log is not silent too long, the webhook subscription is healthy, and failed work/sends
+  waiting. Writes `state/deadman.json` and alerts on a change (found, still there every `BEING_DEADMAN_REMIND_MIN`,
+  cleared). `--dry-run` writes and sends nothing; `--test-alert` sends one test line. Channels: Teams (the owner's 1:1)
+  plus ONE external channel in `~/.config/being-alert/alert.env` (mode 600, outside the kit and git):
+  `BEING_ALERT_CHANNEL=none|ntfy|telegram|command` (default none), `NTFY_URL`, `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`,
+  `BEING_ALERT_COMMAND` (message on stdin), and optional `BEING_ALERT_PING_URL`, pinged on every healthy run so an
+  outside service notices when the whole host is down.
+- **being-retry.** Each item is keyed (messageId, else jobId, else a hash of the line) and gets at most `BEING_RETRY_MAX`
+  (3) attempts, with backoff `BEING_RETRY_BACKOFF_SEC` (120,600,1800). After the last failure it goes to
+  `state/failed-handled.jsonl` (or `outbox/dead/`), a blocker is recorded and the owner gets one short line. A key already
+  in `failed-handled.jsonl` is never replayed, nor is a message another session already answered.
+- **being-routine.** The grant is scope `routine:<chat,...>`: the owner lane, sending only to those chats and the owner's
+  1:1, never full. being-job copies the caller's scope into its signed record, so the grant is minted before the job
+  starts. `BEING_ROUTINES_FILE` (default `<kit>/routines.conf`, gitignored) holds one `<name> <chat[,chat...]>` per line;
+  `owner` as a chat is `OWNER_DM_CHAT`. Each routine's mode is described in `BEING_ROUTINE_SPEC`, a workspace file.
+- **being-sessions.** `name lane|warm <lane> [--msgs <jsonl>] | name job <name>` prints the name a launch should use;
+  `register --name N --lane L --kind work|warm|job|heartbeat --pid P [--sid S] [--perm M] [--job ID]`;
+  `end --name N --pid P [--transcript F]` marks a session ended (live notes it never read go the durable way);
+  `lanes` lists known lanes. A teammate chat's run sees only that chat's own sessions.
+- **being-teams fast path.** A detect and a 👀 sender wait pre-connected, each on its own FIFO that it holds open
+  itself, so the trigger is a short write that never blocks and no descriptor leaks to children. Each standby is
+  replaced after use, after 10 min (token age) or when it died (at most one try per 20 s).
+- **cache-write.mjs.** Up to ~7 processes share one MSAL cache file. A write goes to a 0600 temp file, is merged under
+  flock on `<cache>.lock` with what is on disk (ours wins per entry, nothing else is dropped) and renamed into place.
+- **comms-log.mjs.** Without flock it falls back to a plain append (one write call). Hive mail goes to `hive-<mind>`
+  conversation files, the Being's own mailbox to `mail`; comms.jsonl stays the global log.
+- **fast-warm.mjs.** Each lane is one `claude -p --input-format stream-json` process, started on first use and restarted
+  when it dies, after `BEING_FAST_WARM_TURNS` turns, at the day rollover or when the system prompt changes. A turn
+  that overruns its timeout kills the process (exit 3; exit 2 = no daemon); being-handle then takes the cold path.
+- **mesh.py.** Every session the kit starts has a readable name, sits in a live registry, can be steered and writes to
+  the today board. A caller with no grant is the owner side (an interactive session or a shell); a bad, expired or
+  unreadable grant, or a `scope.mjs show` that fails or times out, is the `denied` lane, which may address nothing. Nothing here calls a model except `relay()` (a short `claude -p` with only SendMessage). A teammate
+  lane may steer or tag only its own lane and sees only its own board lines.
+- **soul.py.** `file owner|team|<lane>`: the owner lane gets SOUL.md (+ the bond), a teammate lane the public soul
+  (`state/soul-public.md`). `public` regenerates it (exit 1 if a private marker survives). `digest <lane>` and `key <lane>`
+  give the warm lane's digest and its key (SOUL, DECISIONS.md, GOALS.md, the lane's board lines, the day). The public soul
+  is a section allowlist (`BEING_SOUL_PUBLIC_SECTIONS`): lines about the owner personally are dropped inside kept
+  sections, and `PRIVATE_MARKERS` are checked after generation (fail closed). The digest is frozen between key changes, so
+  the warm lane's process stays the same from message to message.
+- **Team work digest.** Open items come from ONE file the owner keeps for the team (`BEING_TEAM_PIPELINE`), only if its
+  frontmatter says `share: team`; only unchecked `- [ ] ` lines go, and `@lanes: a,b` limits an item to those chats.

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""being-status: what the Being is doing right now, from live state only (no model).
-   being-status [--actions N]   running work + latest actions, queue, jobs, blockers in the last 24 h
-   being-status --chat <chatId> only what concerns that teammate chat: its queue and its own jobs, nothing about other work"""
+"""being-status [--actions N] | --triage | --chat <chatId>: what the Being is doing now, from live state only (no model).
+   --triage: the session list cut to one line; --chat: only that teammate chat's queue, jobs and board lines."""
 import glob, json, os, re, sys, time, uuid
 from datetime import datetime
 
 KIT = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, KIT)
 # Run standalone too: fill missing settings from the kit's .env.
 if os.path.exists(os.path.join(KIT, ".env")):
     for l in open(os.path.join(KIT, ".env")):
@@ -17,9 +17,13 @@ WORKSPACE = os.environ.get("BEING_WORKSPACE") or os.path.dirname(os.path.dirname
 CLAUDE_DIR = os.path.expanduser("~/.claude/projects/" + re.sub(r"[/.]", "-", os.path.realpath(WORKSPACE)))
 N = int(sys.argv[sys.argv.index("--actions") + 1]) if "--actions" in sys.argv else 8
 CHAT = sys.argv[sys.argv.index("--chat") + 1] if "--chat" in sys.argv else ""
+TRIAGE = "--triage" in sys.argv
+try: import mesh
+except Exception: mesh = None
 
 def job_lane(d):
-    s = d.get("scope") or ""
+    try: s = json.load(open(os.path.join(STATE, "job-scopes", d["id"] + ".json"))).get("scope") or ""   # signed store (review #5)
+    except (OSError, ValueError, KeyError): s = d.get("scope") or ""
     return "team:" + s[6:].split(",")[0] if s.startswith("chats:") and s[6:] else "owner"
 
 def ago(ts):
@@ -33,6 +37,7 @@ def lines(pattern):
 
 def brief(m):
     if m.get("lane") == "job": return f"job {m.get('name')} finished ({m.get('status')})"
+    if m.get("addressedBy") == "note": return f"note from {m.get('from', '?')}: “{(m.get('text') or '')[:90]}”"
     return f"{m.get('from', '?')}: “{(m.get('text') or '')[:90]}”"
 
 def actions(path, since):
@@ -59,20 +64,21 @@ running = False
 for bf in sorted(glob.glob(os.path.join(STATE, "work.*.jsonl"))):
     pid = bf.rsplit(".", 2)[-2]
     if not pid.isdigit() or not os.path.exists(f"/proc/{pid}"): continue
-    running, start = True, os.path.getmtime(bf)
-    sid, lane = owner_sid, "owner"   # being-handle records the lane session a run is in
-    try: sid, lane = open(os.path.join(STATE, f"work-session.{pid}")).read().split()[:2]
+    start = os.path.getmtime(bf)
+    sid, lane, sname = owner_sid, "owner", ""   # being-handle records the lane session a run is in
+    try:
+        w = open(os.path.join(STATE, f"work-session.{pid}")).read().split(); sid, lane = w[:2]; sname = w[2] if len(w) > 2 else ""
     except (OSError, ValueError): pass
-    if CHAT and lane != "team:" + CHAT:
-        print("▶ Busy with another conversation; this chat's messages wait their turn.\n"); continue
-    print(f"▶ WORKING ({'this chat' if CHAT else lane}, {ago(start)} so far) on:")
+    if CHAT and lane != "team:" + CHAT: continue   # lanes run in parallel: other conversations don't hold this one up
+    running = True
+    print(f"▶ WORKING ({'this chat' if CHAT else sname or lane}, {ago(start)} so far) on:")
     for m in lines(os.path.join(STATE, f"work-*.{pid}.jsonl")) or lines(bf):
         if not CHAT or m.get("chatId") == CHAT: print(f"   - {brief(m)}")
     for a in actions(os.path.join(CLAUDE_DIR, sid + ".jsonl"), start): print(f"   · {a}")
     print()
 if not running: print("▶ Daily session: idle\n")
 
-queued = lines(os.path.join(STATE, "queue.jsonl")) + lines(os.path.join(STATE, "work.jsonl"))
+queued = lines(os.path.join(STATE, "queue.jsonl")) + lines(os.path.join(STATE, "work.jsonl")) + lines(os.path.join(STATE, "lanes", "*.inbox.jsonl"))
 if CHAT: queued = [m for m in queued if m.get("chatId") == CHAT]
 print(f"⏳ Waiting: {len(queued)}")
 for m in queued: print(f"   - {brief(m)}")
@@ -89,8 +95,33 @@ for jf in jobs:
     if d["status"] == "running" and d["kind"] == "agent" and d.get("session_id"):
         for a in actions(os.path.join(CLAUDE_DIR, d["session_id"] + ".jsonl"), st)[-3:]: print(f"     · {a}")
 
+if mesh:
+    lane = "team:" + CHAT if CHAT else "owner"
+    rows = [r for r in mesh.sessions(include_other=not CHAT) if r["state"] != "ended"]
+    if CHAT: rows = [r for r in rows if r.get("lane") == lane]   # only this chat's own sessions
+    if TRIAGE or CHAT: print("\n🧩 " + mesh.summary_line(rows))
+    else:
+        print(f"\n🧩 Sessions: {len(rows) or 'none running'}  (steer: being-steer <name> \"<message>\")")
+        for l in mesh.table(rows): print(l)
+    b = mesh.board_list(lane, 10)
+    print(f"\n📋 Board today: {len(b) or 'nothing yet'}")
+    for l in mesh.board_lines(b, show_lane=not CHAT): print(l)
+
 if CHAT: sys.exit(0)
 bl = os.path.join(STATE, "blockers.jsonl")
-recent = [b for b in (lines(bl) if os.path.exists(bl) else []) if time.time() - datetime.fromisoformat(b["at"]).timestamp() < 86400]
+recent = [b for b in (lines(bl) if os.path.exists(bl) else []) if not b.get("resolved") and time.time() - datetime.fromisoformat(b["at"]).timestamp() < 86400]
 print(f"\n🚧 Blockers (24 h): {len(recent) or 'none'}")
 for b in recent[-5:]: print(f"   - {b['at'][11:16]} {b['task']}: {b['error'][:90]} → needs: {b['need'][:80]}")
+import subprocess
+try:   # failed work and failed sends (being-retry), then the hive's own one-line view
+    r = subprocess.run([sys.executable, os.path.join(KIT, "being-retry"), "status"], capture_output=True, text=True, timeout=10)
+    print(f"\n♻️  Retry: {r.stdout.strip() or 'unknown'}")
+except Exception as e: print(f"\n♻️  Retry: unknown ({e})")
+try:   # the dead-man check (its own timer, being-deadman): last result
+    d = json.load(open(os.path.join(STATE, "deadman.json")))
+    print(f"\n🫀 Health ({d['at'][11:16]}, alert channel: {d.get('channel', 'none')}): " + ("ok" if d["ok"] else "; ".join(d["problems"])))
+except (OSError, ValueError, KeyError): print("\n🫀 Health: no dead-man result yet")
+try:
+    r = subprocess.run(["hive-status", "--brief"], capture_output=True, text=True, timeout=10)
+    if r.stdout.strip(): print("\n" + r.stdout.rstrip())
+except Exception: pass

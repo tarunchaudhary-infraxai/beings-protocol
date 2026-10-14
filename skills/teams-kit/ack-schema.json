@@ -16,6 +16,7 @@
           "messageId",
           "action",
           "text",
+          "answered",
           "needsWork",
           "emoji"
         ],
@@ -36,6 +37,10 @@
           },
           "text": {
             "type": "string"
+          },
+          "answered": {
+            "type": "boolean",
+            "description": "true when text is the complete answer (action reply), not just an acknowledgement"
           },
           "needsWork": {
             "type": "boolean"

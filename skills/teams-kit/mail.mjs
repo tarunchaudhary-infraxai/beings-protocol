@@ -6,7 +6,7 @@ import path from 'node:path';
 import { connect, need, fail, strip, standby, beingSender } from './graph.mjs';
 import { logComms } from './comms-log.mjs';
 import { currentScope } from './scope.mjs';
-import { findSecrets } from './secrets.mjs';
+import { findSecrets, findSecretsInFiles } from './secrets.mjs';
 
 const args = process.argv.slice(2);
 const opt = (f) => { const i = args.indexOf(f); return i === -1 ? null : (args[i + 1] ?? ''); };
@@ -56,11 +56,23 @@ try {
     if (!to.length || !subject) fail('--send needs --to and --subject', 2);
     // Only a full-scope grant may mail anyone but the owner.
     const owner = (process.env.OWNER_UPN || '').toLowerCase();
-    const { scope } = currentScope();
+    const { scope, why } = currentScope();
+    if (scope === 'none') fail(`blocked: this run's send grant is not valid (${why}); nothing sent`, 3);
     if (scope !== 'full' && [...to, ...cc].some((x) => x.toLowerCase() !== owner)) fail(`blocked: ${scope.split(':')[0]} scope may only mail the owner`, 3);
     const files = list(opt('--attach'));
     for (const f of files) if (!existsSync(f) || statSync(f).size >= 3 * 1024 * 1024) fail(`attachment missing or >= 3 MB: ${f}`, 2);
     const attachments = files.map((f) => ({ '@odata.type': '#microsoft.graph.fileAttachment', name: path.basename(f), contentBytes: readFileSync(f).toString('base64') }));
+    // --inline path=cid[,path=cid]: images referenced in the HTML as src="cid:<cid>" (signature logo).
+    const inline = list(opt('--inline')).map((spec) => {
+      const eq = spec.lastIndexOf('='), f = spec.slice(0, eq), cid = spec.slice(eq + 1);
+      if (eq < 1 || !cid || !existsSync(f) || statSync(f).size >= 1024 * 1024) fail(`inline image missing, too big or not path=cid: ${spec}`, 2);
+      return [f, cid];
+    });
+    const fileLeaks = findSecretsInFiles([...files, ...inline.map(([f]) => f)]);
+    if (fileLeaks.length) fail(`blocked: an attachment looks like it contains secrets (${fileLeaks.join(', ')}); nothing sent`, 3);
+    for (const [f, cid] of inline) {
+      attachments.push({ '@odata.type': '#microsoft.graph.fileAttachment', name: path.basename(f), contentId: cid, isInline: true, contentBytes: readFileSync(f).toString('base64') });
+    }
     const rcpt = (a) => ({ emailAddress: { address: a } });
     const content = readFileSync(0, 'utf8');
     const leaked = findSecrets(`${subject}\n${content}`);

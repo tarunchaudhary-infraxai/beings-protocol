@@ -8,7 +8,7 @@ import { connect, need, stateDir, standby, fail, beingSender } from './graph.mjs
 import { kitEnv, ownerDelegate } from './kit-env.mjs';
 import { logComms } from './comms-log.mjs';
 import { toHtml } from './fmt.mjs';
-import { findSecrets } from './secrets.mjs';
+import { findSecrets, findSecretsInFiles } from './secrets.mjs';
 import { chatLabel, fingerprint, renderPrompt, allocDraftId, COMMAND_RE } from './approval.mjs';
 
 const SENDER = beingSender();   // the prompt is posted as the Being, never as the owner
@@ -25,7 +25,7 @@ if (!text || (isMail ? !(to || replyTo) || (!subject && !replyTo) : !chatId)) {
   fail('usage: --chat <chatId> [--re <msg>] < draft.md | --mail --to a,b [--cc c] --subject S [--reply-to <id>] [--attach /abs/f] < draft.md', 2);
 }
 if (standby()) fail('standby host: drafts disabled', 3);
-const leaked = findSecrets(`${subject}\n${re}\n${text}`);
+const leaked = [...findSecrets(`${subject}\n${re}\n${text}`), ...findSecretsInFiles(attach.map((a) => a.path))];
 if (leaked.length) fail(`blocked: draft looks like it contains secrets (${leaked.join(', ')}); not staged`, 3);
 // A draft that is itself a command ("send D8") would approve another draft once sent as the owner.
 if (COMMAND_RE.test(text)) fail('blocked: a draft cannot be an approval command; not staged', 3);

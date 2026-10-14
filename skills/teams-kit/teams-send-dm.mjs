@@ -27,8 +27,9 @@ const { g, me, tokenFor } = await connect({ ...SENDER, sender: true, scopes: ['C
 console.error(`sending as ${me.userPrincipalName} → ${CHAT_ID ? `chat ${CHAT_ID}` : RECIPIENT}`);
 if (WHOAMI) { console.log(`verified sender: ${me.userPrincipalName}`); process.exit(0); }
 
-// Scope comes from the handler's grant (BEING_SEND_TOKEN), never from a plain env var; no grant means owner-only.
-const { scope: SCOPE } = currentScope();
+// Scope comes from the handler's grant (BEING_SEND_TOKEN), never from a plain env var; no grant means owner-only, a bad one none.
+const { scope: SCOPE, why: WHY } = currentScope();
+if (SCOPE === 'none') fail(`blocked: this run's send grant is not valid (${WHY}); nothing sent`, 3);
 const LIMITED = SCOPE !== 'full', ALLOWED = allowedChats(SCOPE);
 if (LIMITED && !CHAT_ID && RECIPIENT !== OWNER) fail(`blocked: ${SCOPE.split(':')[0]} scope (recipient ${RECIPIENT})`, 3);
 
@@ -79,7 +80,7 @@ if (process.env.BEING_VOICE === 'fast' && !VERBATIM) {
   const dir = path.join(stateDir(), 'outbox'); mkdirSync(dir, { recursive: true });
   const id = `${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({ id, chatId: chat.id, html: content, quoteId,
-    attachUrl: ATTACH_URL, attachName: ATTACH_NAME, scope: SCOPE, created: new Date().toISOString() }));
+    attachUrl: ATTACH_URL, attachName: ATTACH_NAME, scope: SCOPE, session: process.env.BEING_SESSION_NAME || "", created: new Date().toISOString() }));
   console.log(`queued ${id} for chat ${chat.id}; sent after the voice pass`);
   process.exit(0);
 }
@@ -99,6 +100,6 @@ try { msg = await g(`/chats/${chat.id}/messages`, { body: payload }); } catch (e
   if (!payload.attachments.length) delete payload.attachments;
   msg = await g(`/chats/${chat.id}/messages`, { body: payload }).catch((e2) => fail(`send failed: ${e2.message}`));
 }
-logComms({ dir: 'out', kind: 'message', chatId: chat.id, messageId: msg.id, replyTo: quoteId || undefined,
+logComms({ dir: 'out', kind: 'message', session: process.env.BEING_SESSION_NAME || undefined, chatId: chat.id, messageId: msg.id, replyTo: quoteId || undefined,
   to: CHAT_ID ? (chat.topic || chat.chatType) : RECIPIENT, text: content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() });
 console.log(`sent to ${chat.id} as message ${msg.id}`);

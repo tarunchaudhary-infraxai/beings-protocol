@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Device-code sign-in for one identity into its own 0600 MSAL cache; refuses any other account.
 // Usage: README.md "Script reference".
-import { writeFileSync } from 'node:fs';
+import { renameSync, unlinkSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { msal, fail } from './graph.mjs';
 import { kitEnv, ownerMatch } from './kit-env.mjs';
@@ -25,10 +25,15 @@ if (ownerMatch({ upn: UPN, cache: CACHE }, kenv)) {
 }
 const SCOPES = opt('--scopes') ? opt('--scopes').split(',').map((x) => x.trim()).filter(Boolean) : DEFAULT_SCOPES;
 
-const r = await msal(CACHE).acquireTokenByDeviceCode({ scopes: SCOPES, deviceCodeCallback: (m) => console.log(m.message) });
+// Sign in into a temp cache and swap it in only on the right account: a wrong-account sign-in must never
+// destroy the working identity.
+const TMP = `${CACHE}.login-tmp`;
+try { unlinkSync(TMP); } catch {}
+const r = await msal(TMP).acquireTokenByDeviceCode({ scopes: SCOPES, deviceCodeCallback: (m) => console.log(`${m.message}\nUse a private window and "Use another account": sign in as ${UPN}, nobody else.`) });
 const got = (r.account?.username || '').toLowerCase();
 if (got !== UPN) {
-  try { writeFileSync(CACHE, '{}', { mode: 0o600 }); } catch {}
-  fail(`REFUSED: signed in as ${got}, expected ${UPN}. Cache wiped.`, 2);
+  try { unlinkSync(TMP); } catch {}
+  fail(`REFUSED: signed in as ${got}, expected ${UPN}. Existing sign-in left untouched.`, 2);
 }
+renameSync(TMP, CACHE);
 console.log(`ok: ${got} (object id ${r.account?.localAccountId || 'see teams-read.mjs --whoami'})`);

@@ -10,28 +10,40 @@ set -a
 . "$KIT/.env"
 set +a
 STATE="${BEING_STATE_DIR:?}"; JOBS="$STATE/jobs"; WORKSPACE="${BEING_WORKSPACE:-$(cd "$KIT/../.." && pwd)}"
+CLAUDE_DIR="$HOME/.claude/projects/$(readlink -f "$WORKSPACE" | sed 's#[/.]#-#g')"
 KREL=$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' "$KIT" "$WORKSPACE")
 mkdir -p "$JOBS"
 
 json_get() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],""))' "$1" "$2"; }
-lane_of_scope() { if [[ $1 == chats:?* ]]; then local c=${1#chats:}; echo "team:${c%%,*}"; else echo owner; fi; }
+lane_of_scope() {   # = mesh.lane_of_scope: a scope that is not valid (none, empty) is no lane at all, never the owner
+  case $1 in chats:?*) local c=${1#chats:}; echo "team:${c%%,*}" ;; full|owner-only|routine:?*) echo owner ;; *) echo denied ;; esac
+}
+job_scope_of() {   # $1 job file: the scope from the signed store (state/job-scopes), not from the job's own record
+  local s="$STATE/job-scopes/$(basename "$1")"
+  if [[ -f $s ]]; then json_get "$s" scope; else json_get "$1" scope; fi   # older jobs have no signed entry
+}
 mine() {   # a teammate-chat caller sees only the jobs its own chat started
   local me; me=$(lane_of_scope "$(node "$KIT/scope.mjs" show 2>/dev/null)")
-  [[ $me == owner ]] || [[ -f "$1" && "$(lane_of_scope "$(json_get "$1" scope)")" == "$me" ]]
+  [[ $me != denied ]] || return 1
+  [[ $me == owner ]] || [[ -f "$1" && "$(lane_of_scope "$(job_scope_of "$1")")" == "$me" ]]
 }
 
 start_job() {   # $1 kind, $2 name, $3 notify chat, $4 model, $5 network (0|1), rest = payload
   local kind=$1 name=$2 notify=$3 model=$4 net=$5; shift 5
   local id; id="$(date +%m%d-%H%M%S)-$(printf '%s' "$name" | tr -cs 'A-Za-z0-9' '-' | cut -c1-24)"
-  local scope; scope=$(node "$KIT/scope.mjs" show)
-  python3 - "$JOBS/$id.json" "$id" "$kind" "$name" "$notify" "$scope" "${BEING_JOB_ADD_DIRS:-}" "$model" "${BEING_NAME:?}" "$net" "$@" <<'PY'
+  local scope sname; scope=$(node "$KIT/scope.mjs" show)
+  # Readable session name (nova-job-<name>, nova-heartbeat), unique among live sessions: ListAgents, being-sessions, being-steer.
+  sname=$(python3 "$KIT/being-sessions" name job "$name" 2>/dev/null || echo "job-$id")
+  python3 - "$JOBS/$id.json" "$id" "$kind" "$name" "$notify" "$scope" "${BEING_JOB_ADD_DIRS:-}" "$model" "${BEING_NAME:?}" "$net" "$sname" "$@" <<'PY'
 import json,sys,datetime,uuid
-f,id_,kind,name,notify,scope,add_dirs,model,being,net,*payload=sys.argv[1:]
+f,id_,kind,name,notify,scope,add_dirs,model,being,net,sname,*payload=sys.argv[1:]
 sid=str(uuid.uuid5(uuid.NAMESPACE_URL,f"being-job/{being}/{id_}")) if kind=="agent" else ""
 json.dump({"id":id_,"kind":kind,"name":name,"notify":notify,"scope":scope,"add_dirs":add_dirs,"model":model,"network":net=="1","payload":payload,
-           "session_id":sid,"status":"running","started":datetime.datetime.now().astimezone().isoformat()},open(f,"w"),indent=2)
+           "session_id":sid,"session_name":sname,"status":"running","started":datetime.datetime.now().astimezone().isoformat()},open(f,"w"),indent=2)
 PY
-  setsid "$0" __exec "$id" </dev/null >/dev/null 2>&1 &
+  # The scope and notify chat that count are signed outside the job's own record (scope.mjs job-sign, review #5).
+  node "$KIT/scope.mjs" job-sign "$id" "$notify" || { rm -f "$JOBS/$id.json"; echo "could not sign job $id" >&2; exit 2; }
+  setsid "$0" __exec "$id" </dev/null >/dev/null 2>"$JOBS/$id.exec.log" &
   echo "$id"
 }
 
@@ -57,59 +69,151 @@ case "${1:-list}" in
     notify=${2:?chatId}; shift 2
     [[ $kind == run && "${1:-}" == -- ]] && shift
     [[ $# -gt 0 ]] || { echo "nothing to run" >&2; exit 2; }
+    # A raw command (run) or a networked codex job is an unrestricted shell: only a run holding the full scope (the owner's
+    # own lane) may start one; teammate and owner-only runs get agent jobs, behind their fence (review #4).
+    [[ $(lane_of_scope "$(node "$KIT/scope.mjs" show 2>/dev/null)") != denied ]] || { echo "refused: this run's send grant is not valid" >&2; exit 3; }
+    if [[ $kind == run || $net == 1 ]]; then
+      have=$(node "$KIT/scope.mjs" show 2>/dev/null || echo none)
+      [[ $have == full ]] || { echo "refused: being-job $kind$( (( net )) && echo ' --network') needs the full scope (this run has: $have)" >&2; exit 3; }
+    fi
     start_job "$kind" "$name" "$notify" "$model" "$net" "$@" ;;
   __exec)
     id=$2; jf="$JOBS/$id.json"; log="$JOBS/$id.log"; result="$JOBS/$id.result.md"
-    export BEING_SEND_TOKEN; BEING_SEND_TOKEN=$(node "$KIT/scope.mjs" mint "$(json_get "$jf" scope)" 48)
-    export BEING_VOICE=fast
+    failed_start() {   # a step before the run failed: record it (stderr is in $id.exec.log), never leave the job "running"
+      trap - ERR; echo "being-job: start failed at line $2 (exit $1)" >&2
+      [[ -n ${BEING_SEND_TOKEN:-} ]] && { printf '%s' "$BEING_SEND_TOKEN" | node "$KIT/scope.mjs" revoke || true; }
+      flock "$STATE/jobs.lock" python3 -c 'import json,sys,datetime; f,rc,ln=sys.argv[1:4]; d=json.load(open(f)); d.update(status="failed-start",exit=int(rc),error=f"line {ln}",finished=datetime.datetime.now().astimezone().isoformat()); json.dump(d,open(f,"w"),indent=2)' "$jf" "$1" "$2" || true
+      exit "$1"
+    }
+    trap 'failed_start $? $LINENO' ERR
+    # Scope and notify chat from the signed store only; an unsigned or altered job never runs (review #5).
+    if ! js=$(node "$KIT/scope.mjs" job-scope "$id" 2>>"$log"); then
+      flock "$STATE/jobs.lock" python3 -c 'import json,sys,datetime; f=sys.argv[1]; d=json.load(open(f)); d.update(status="refused-unsigned",exit=3,finished=datetime.datetime.now().astimezone().isoformat()); json.dump(d,open(f,"w"),indent=2)' "$jf" || true
+      exit 3
+    fi
+    jscope=$(printf '%s' "$js" | python3 -c 'import json,sys; print(json.load(sys.stdin)["scope"])')
+    jnotify=$(printf '%s' "$js" | python3 -c 'import json,sys; print(json.load(sys.stdin)["notify"])')
+    export BEING_SEND_TOKEN; BEING_SEND_TOKEN=$(node "$KIT/scope.mjs" mint "$jscope" 48)
+    if [[ ${BEING_VOICE_PASS:-on} != off ]]; then export BEING_VOICE=fast; else unset BEING_VOICE; fi   # voice pass off: job sends go out directly, not into an outbox nobody flushes until the next work run
     kind=$(json_get "$jf" kind)
-    export BEING_LANE; BEING_LANE=$(lane_of_scope "$(json_get "$jf" scope)")
-    perms=(--dangerously-skip-permissions); fence=""
+    # The record is writable by the run that owns it: a raw command or network is re-checked against the signed scope.
+    if [[ $jscope != full && ( $kind == run || "$(json_get "$jf" network)" == True ) ]]; then
+      echo "refused: $kind job with network/raw command needs the full scope (signed scope: $jscope)" >>"$log"
+      printf '%s' "$BEING_SEND_TOKEN" | node "$KIT/scope.mjs" revoke || true
+      flock "$STATE/jobs.lock" python3 -c 'import json,sys,datetime; f=sys.argv[1]; d=json.load(open(f)); d.update(status="refused-scope",exit=3,finished=datetime.datetime.now().astimezone().isoformat()); json.dump(d,open(f,"w"),indent=2)' "$jf" || true; exit 3
+    fi
+    export BEING_LANE; BEING_LANE=$(lane_of_scope "$jscope")
+    perms=(--dangerously-skip-permissions); fence=""; perm=bypassPermissions
+    sname=$(json_get "$jf" session_name); [[ -n $sname ]] || sname="job-$id"
+    skind=job; [[ $sname == *-heartbeat || $sname == *-heartbeat-[0-9]* ]] && skind=heartbeat
+    export BEING_SESSION_NAME="$sname"
     if [[ $BEING_LANE != owner ]]; then
       export CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
       perms=(--dangerously-skip-permissions --settings "$(python3 "$KIT/team-fence.py" --settings)")
-      [[ "${BEING_SINGLE_USER_ACK:-0}" == 1 ]] && perms=(--permission-mode dontAsk --settings "$(python3 "$KIT/team-fence.py" --settings)" \
-        --allowedTools "${BEING_TEAM_JOB_TOOLS:-Read,Grep,Glob,Edit,Write,WebFetch,WebSearch,Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash($KREL/being-blocker:*)}")
-      fence="- Started from a teammate chat: never open .beings-local/, credential stores, any .env, other sessions, kit state or
-  owner tools, and never use or hint at anything personal about the owner or anyone else."
+      [[ "${BEING_SINGLE_USER_ACK:-0}" == 1 ]] && { perm=dontAsk; perms=(--permission-mode dontAsk --settings "$(python3 "$KIT/team-fence.py" --settings)" \
+        --allowedTools "${BEING_TEAM_JOB_TOOLS:-Read,Grep,Glob,Edit,Write,WebFetch,WebSearch,Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash($KREL/being-blocker:*),Bash($KREL/being-board:*)}"); }
+      fence="- Started from a teammate chat: never open the owner's memory, decisions or daily logs (.beings/MEMORY.md, USER.md,
+  DECISIONS.md, AUTONOMY.md, GOALS.md, ORG.md, .beings/memory/, .beings/bond/), .beings-local/, the hive, credential stores,
+  any .env, other sessions, kit state or owner tools, and never use or hint at anything personal about the owner or anyone else."
     fi
     mapfile -t payload < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["payload"]))' "$jf")
-    set +e
+    # OS isolation (isolation/README.md): a job of a sandboxed lane (BEING_ISOLATION_LANES=team: teammate jobs only) starts
+    # through being-launch, with the grant held by the run's broker; the RESULT file is collected back into kit state.
+    launch=(); iso="${BEING_ISOLATION:-off}"
+    if [[ $iso != off ]] && { [[ ${BEING_ISOLATION_LANES:-all} == all ]] || [[ $BEING_LANE == team:* ]]; }; then
+      launch=("$KIT/being-launch" "$BEING_LANE" --cwd "$WORKSPACE" --collect "$result")
+      # team-sync copies the public soul into the lane: make sure soul.py has generated it first (being-handle does this
+      # through soul_args before its own team-sync).
+      [[ $BEING_LANE == team:* ]] && { python3 "$KIT/soul.py" file "$BEING_LANE" >/dev/null 2>>"$log" || true; }
+      [[ $BEING_LANE == team:* ]] && { python3 "$KIT/team-sync" "${BEING_LANE#team:}" >>"$log" 2>&1 || { echo "team-sync failed: job refused" >>"$log"
+        printf '%s' "$BEING_SEND_TOKEN" | node "$KIT/scope.mjs" revoke || true
+        flock "$STATE/jobs.lock" python3 -c 'import json,sys,datetime; f=sys.argv[1]; d=json.load(open(f)); d.update(status="refused-team-sync",exit=3,finished=datetime.datetime.now().astimezone().isoformat()); json.dump(d,open(f,"w"),indent=2)' "$jf" || true; exit 3; }; }
+    fi
+    trap - ERR; set +e
     if [[ $kind == agent ]]; then
-      (cd "$WORKSPACE" && claude -p "${perms[@]}" --model "$(json_get "$jf" model)" --session-id "$(json_get "$jf" session_id)" \
-        "$RULES
+      # The soul, always (soul.py): the full SOUL.md for an owner-lane job or heartbeat, the public soul for a teammate's job.
+      sargs=(); soulf=$(python3 "$KIT/soul.py" file "$BEING_LANE" 2>>"$log") && [[ -s $soulf ]] && sargs=(--append-system-prompt-file "$soulf") \
+        || echo "SOUL MISSING: this job runs without the soul" >>"$log"
+      # Named and registered; no SendMessage tool (other sessions are reached through being-steer). exec: $! is claude.
+      [[ ${#launch[@]} -gt 0 && -n ${soulf:-} && -f $soulf ]] && launch+=(--expose "$soulf")
+      (cd "$WORKSPACE" && exec "${launch[@]}" ${launch:+--} claude -p -n "$sname" "${perms[@]}" --disallowedTools SendMessage --model "$(json_get "$jf" model)" "${sargs[@]}" \
+        --session-id "$(json_get "$jf" session_id)" "$RULES
 $fence
 RESULT file: $result
 Task:
-${payload[*]}" </dev/null) >"$log" 2>&1
+${payload[*]}" </dev/null) >"$log" 2>&1 &
+      cpid=$!
+      python3 "$KIT/being-sessions" register --name "$sname" --lane "$BEING_LANE" --kind "$skind" --pid "$cpid" \
+        --sid "$(json_get "$jf" session_id)" --perm "$perm" --job "$id" 2>>"$log" || true
+      wait "$cpid"
     elif [[ $kind == codex ]]; then
       extra=(); IFS=: read -ra dirs <<<"$(json_get "$jf" add_dirs)"
       for d in "${dirs[@]}"; do [[ -n $d ]] && extra+=(--add-dir "$d"); done
       net=false; [[ "$(json_get "$jf" network)" == True ]] && net=true
-      (cd "$WORKSPACE" && codex exec --json --skip-git-repo-check -C "$WORKSPACE" -s workspace-write "${extra[@]}" \
+      (cd "$WORKSPACE" && "${launch[@]}" ${launch:+--} codex exec --json --skip-git-repo-check -C "$WORKSPACE" -s workspace-write "${extra[@]}" \
         -c "sandbox_workspace_write.network_access=$net" -c model_reasoning_effort=medium -o "$result" \
         "$RULES (Your final message is written to the RESULT file for you.)
 $fence
 Task:
 ${payload[*]}" </dev/null) >"$JOBS/$id.events.jsonl" 2>"$log"
     else
-      (cd "$WORKSPACE" && "${payload[@]}") >"$log" 2>&1
+      (cd "$WORKSPACE" && "${launch[@]}" ${launch:+--} "${payload[@]}") >"$log" 2>&1
     fi
     rc=$?; set -e
     printf '%s' "$BEING_SEND_TOKEN" | node "$KIT/scope.mjs" revoke; unset BEING_SEND_TOKEN
+    # Ended: live notes the job never read are recorded in its job file, for the result handler below.
+    [[ $kind == agent ]] && { python3 "$KIT/being-sessions" end --name "$sname" --pid "$cpid" \
+      --transcript "$( if [[ ${#launch[@]} -eq 0 ]]; then echo "$CLAUDE_DIR/$(json_get "$jf" session_id).jsonl"; else "$KIT/being-launch" transcript "$BEING_LANE" "$(json_get "$jf" session_id)" 2>/dev/null || echo /nonexistent; fi )" >>"$log" 2>&1 || true; }
     # Verify: a model job that exits 0 without a result file is not "done".
     status="done"; (( rc != 0 )) && status="failed"
     [[ $kind != run && $status == "done" && ! -s "$result" ]] && status=no-result
-    python3 - "$jf" "$rc" "$status" <<'PY'
+    flock "$STATE/jobs.lock" python3 - "$jf" "$rc" "$status" <<'PY'
 import json,sys,datetime
 f,rc,st=sys.argv[1],int(sys.argv[2]),sys.argv[3]; d=json.load(open(f))
 d.update(status=st, exit=rc, finished=datetime.datetime.now().astimezone().isoformat()); json.dump(d,open(f,"w"),indent=2)
 PY
-    python3 - "$jf" "$log" "$result" "$STATE/work.jsonl" <<'PY'
+    # Quiet tick: a done job whose result file starts with QUIET has nothing for anyone, so it does not wake the
+    # owner lane (heartbeats every 30 min). Failures and no-result always wake it.
+    if [[ $status == done && -s "$result" ]] && head -c 5 "$result" | grep -qx QUIET; then
+      echo "quiet: result starts with QUIET, owner lane not woken" >>"$log"; exit 0
+    fi
+    flock "$STATE/work-queue.lock" python3 - "$jf" "$log" "$result" "$STATE/work.jsonl" "$jscope" "$jnotify" <<'PY'
 import json,sys,os
-jf,log,res,q=sys.argv[1:5]; d=json.load(open(jf))
-ev={"lane":"job","jobId":d["id"],"name":d["name"],"status":d["status"],"exit":d["exit"],"chatId":d["notify"],"scope":d["scope"],
+jf,log,res,q,scope,notify=sys.argv[1:7]; d=json.load(open(jf))
+# scope and chatId come from the signed store (checked at start), never from the record the job could write.
+ev={"lane":"job","jobId":d["id"],"name":d["name"],"status":d["status"],"exit":d["exit"],"chatId":notify,"scope":scope,
     "log":log,"result":res if os.path.exists(res) else "","at":d["finished"],"messageId":"job:"+d["id"]}
+if d.get("notes"): ev["notes"]=d["notes"]   # notes other sessions left for it (being-steer) that it never read
+# What this job already sent to people (the wake says whether the job replied or is context only). Counted from
+# the outbox records teams-send-dm stamps with the sender's session name: code, not the job's own claim.
+try:
+    import glob
+    ob=os.path.join(os.path.dirname(q),"outbox"); sent=[]
+    import datetime as _dt
+    for f in glob.glob(os.path.join(ob,"*.json"))+glob.glob(os.path.join(ob,"sent","*.json")):
+        try: r=json.load(open(f))
+        except Exception: continue
+        import datetime as _dt
+        _c=_dt.datetime.fromisoformat(str(r.get("created","")).replace("Z","+00:00")) if r.get("created") else None
+        _s=_dt.datetime.fromisoformat(d["started"]) if d.get("started") else None
+        if r.get("session") and r.get("session")==d.get("session_name") and _c and _s and _c>=_s:
+            sent.append({"chatId":r.get("chatId"),"outbox":r.get("id"),"created":r.get("created")})
+    # Direct sends (no outbox) are logged in comms.jsonl with the same session stamp.
+    try:
+        for l in open(os.path.join(os.path.dirname(q),"comms.jsonl")):
+            try: r=json.loads(l)
+            except Exception: continue
+            if r.get("dir")=="out" and r.get("session") and r.get("session")==d.get("session_name"):
+                _c=_dt.datetime.fromisoformat(str(r.get("loggedAt","")).replace("Z","+00:00")) if r.get("loggedAt") else None
+                _s=_dt.datetime.fromisoformat(d["started"]) if d.get("started") else None
+                if _c and _s and _c>=_s and not any(x.get("messageId")==r.get("messageId") for x in sent):
+                    sent.append({"chatId":r.get("chatId"),"messageId":r.get("messageId"),"created":r.get("loggedAt")})
+    except OSError: pass
+    ev["replied"]=sent
+    ev["repliedNote"]=("this job already messaged: add only what is new or what your check corrects" if sent
+                       else "this job sent nothing: its result is yours to verify and deliver (or keep as context)")
+except Exception as e:
+    ev["repliedNote"]=f"replied check failed: {e}"
 open(q,"a").write(json.dumps(ev)+"\n")
 PY
     setsid "$KIT/being-handle" work </dev/null >/dev/null 2>&1 & ;;

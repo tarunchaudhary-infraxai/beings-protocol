@@ -22,6 +22,19 @@ Lanes run as separate model calls **in separate sessions**: the owner's lane has
 every teammate chat gets its own pair for the day, so a teammate's run never resumes a session holding the owner's day or
 another chat's. A finished job resumes the session of the lane that started it. Triage and voice are one call per chat in
 that lane's fast session, and a teammate chat's triage sees only its own live state (`being-status --chat`).
+Work runs lock **per lane** (`state/lanes/<lane>.lock`), so a teammate's run never waits behind the owner's long one; batches
+for one lane run one after another in that lane's session. Shared files keep their own lock: `work-queue.lock` (work.jsonl
+and the lane inboxes), `enqueue.lock` (queue.jsonl), `voice.lock` (the outbox flush), `comms.jsonl.lock`, and the mesh locks.
+
+**Session mesh (names, steering, board).** Every Claude session the kit starts has a name (`nova-owner`,
+`nova-team-<first name>`, `nova-delegate`, `nova-warm-<lane>`, `nova-job-<name>`, `nova-heartbeat`), listed live by
+`being-sessions` and `being-status`. Kit sessions have no `SendMessage` tool; another session is reached only through
+`being-steer`, which takes the caller's lane from its signed grant (not an env var): a teammate lane may address only its own
+lane, every note is logged (`state/notes.jsonl`), a note is at most `BEING_NOTE_MAX` characters (a task, not a context dump)
+and secret-looking text is refused. A note to a teammate lane carries only the text the sender wrote for that teammate. The
+board (`being-board`, `state/board.jsonl`) is scoped the same way: the owner sees every line, a teammate lane writes and sees
+only lines tagged with its own lane. Residual: an interactive session the kit did not start still has `SendMessage`; the
+work rules tell every session to use `being-steer`, and teammate runs refuse `SendMessage` in `team-fence.py`.
 
 **Teammate memory fence.** Private memory is never used, quoted or used as the basis of an inference for anyone but the
 owner ("they've had a lot on" is a leak). Teammate runs and the jobs they start run with Claude Code auto memory off and the
@@ -32,8 +45,8 @@ needs the owner's OK first.
 
 The scope is not an environment variable the run can edit. The handler mints an opaque per-run grant (`scope.mjs`), stores
 its hash, scope and an HMAC under `state/grants/`, and hands the run the token in `BEING_SEND_TOKEN`. Senders look the scope
-up from the grant. No token, an unknown, expired or unsigned one means **owner-only**, so dropping the token can only narrow
-a run. Minting needs `state/handler.key` (0600, created by the handler); the state directory comes from the kit's `.env` on
+up from the grant. No token means **owner-only**, so dropping the token can only narrow a run; an unknown, expired, unsigned
+or unreadable one means **none**: every send and every lane is refused, never the owner's. Minting needs `state/handler.key` (0600, created by the handler); the state directory comes from the kit's `.env` on
 disk, never from the run's environment. Whoever can read that key can mint any scope: see "Threat model".
 
 ## Never
@@ -49,14 +62,18 @@ disk, never from the run's environment. Whoever can read that key can mint any s
 | Sender pinned by UPN and verified with `/me` before every send | `graph.mjs` (all senders) |
 | Senders refuse the owner's identity: UPN, cache file (by realpath) or object id from the kit's on-disk `.env`, exit 3 | `graph.mjs`: `teams-send-dm.mjs` (and the voice pass), `mail.mjs --send`, `teams-ack.mjs`, `draft-for-owner.mjs` |
 | Owner sign-in off unless `BEING_OWNER_DELEGATE=1`; signing in as the owner prints a warning | `teams-login-device.mjs`, `owner-read`, `owner-mail`, `approve.mjs`, `being-teams` |
-| Send scope from the handler's grant, owner-only without one; wrong target exits 3, nothing sent | `scope.mjs`, `teams-send-dm.mjs`, `mail.mjs` |
+| Send scope from the handler's grant, owner-only without one, refused with a bad one; wrong target exits 3, nothing sent | `scope.mjs`, `teams-send-dm.mjs`, `mail.mjs` |
 | Secret filter: text that quotes `.env` values, `.env` lines, tokens or keys is refused (exit 3) or, for triage acks, dropped | `secrets.mjs` in every sender |
 | No self-reply loop | `teams-detect.mjs` skips the Being's own messages |
 | No double acknowledgement | `state/acked-ids.txt` |
 | Owner's chats/mail readable only under a full or owner-only grant | `owner-read`, `owner-mail` |
-| Grants need the handler key's HMAC; a forged or edited grant file is owner-only | `scope.mjs` |
-| Triage and voice: no file tools (Claude `--tools ""`), run in an empty directory | `being-handle fast_daily` |
+| Grants need the handler key's HMAC; a forged, edited or expired grant is refused (scope none, lane denied) | `scope.mjs` |
+| Triage and voice: no file tools (Claude `--tools ""`), run in an empty directory; warm processes are per lane, never shared | `being-handle fast_daily`, `fast-warm.mjs` |
 | Sessions per lane: owner, each teammate chat, and job results back into the lane that started them | `being-handle`, `being-job` |
+| Work locks per lane; one lane's batches never overlap; work.jsonl claimed by atomic rename, appends under `work-queue.lock` | `being-handle work / work-lane` |
+| Notes and board lines: caller lane from the signed grant; teammate lanes address and see only their own lane; length cap, secret filter, every note logged | `mesh.py`, `being-steer`, `being-board` |
+| Kit sessions run without `SendMessage`; teammate runs refuse it in the fence | `being-handle`, `being-job`, `team-fence.py` |
+| A note delivered live but not read before the run ended goes to the lane's queue once (transcript check), never twice | `mesh.py settle` |
 | Teammate runs: auto memory off, private paths refused by a hook, own jobs only | `team-fence.py`, `being-job` |
 | Teammate triage sees only its own chat's live state | `being-status --chat` |
 | Attachments are fetched only from Microsoft Graph / SharePoint hosts; unshared files exit 3 | `teams-fetch-attachment.mjs` |
@@ -97,10 +114,12 @@ Work runs use a shell with permissions skipped (`claude -p --dangerously-skip-pe
 guard, scopes and approval checks stop mistakes and casual injection, **not** a determined injection: the tokens and the
 handler key are files that user can read, and no check in the same user can tell the handler from a run.
 Two-user layout: run the kit (loop, handler, senders, `approve.mjs`, `.env`, token caches, `state/`, `handler.key`) as
-one OS user and the model clients as another (`BEING_MODEL_USER`); the model reaches senders only through a narrow
-`sudo -u <kit user>` rule for the send scripts, passing `BEING_SEND_TOKEN`, never `scope.mjs`. That layout is host setup,
-not automated by this kit yet. Until then keep the owner sign-in **off** (`BEING_OWNER_DELEGATE=0`, no `OWNER_CACHE`
-file): drafts still reach the owner, who sends them by hand.
+one OS user and the model clients as others: `BEING_MODEL_USER` (owner lane, jobs) and `BEING_TEAM_USER` (teammate lanes, in
+bubblewrap, their lane dir only). The model users have no sudo rights. They reach the kit only through a per-run
+`kit-broker` socket that holds the run's grant; the model never holds `BEING_SEND_TOKEN`. Set up with `isolation/` (root:
+`setup-users.sh`; kit user: `migrate.sh`; checks: `verify.sh`; see isolation/README.md). `BEING_ISOLATION=bwrap` gives
+the same sandboxes without root, as the kit user. Until it is in place keep the owner sign-in **off**
+(`BEING_OWNER_DELEGATE=0`, no `OWNER_CACHE` file): drafts still reach the owner, who sends them by hand.
 
 **Getting there at birth.** The second user needs an admin once: `sudo useradd -m <being>-model`, the sudo rule for the send
 scripts, and `BEING_MODEL_USER=<being>-model` in `.env`. A Being that cannot get that (no sudo, no admin) sets

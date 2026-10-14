@@ -33,6 +33,11 @@ export function envSecrets(file = path.join(KIT, '.env'), env = process.env) {
   return out;
 }
 
+// Attachment bytes get the same scan (latin1 keeps every ASCII credential intact). Returns "<file>: <match>" names.
+export function findSecretsInFiles(files, { secrets = envSecrets() } = {}) {
+  return files.flatMap((f) => findSecrets(readFileSync(f).toString('latin1'), { secrets }).map((n) => `${path.basename(f)}: ${n}`));
+}
+
 export function findSecrets(text, { secrets = envSecrets() } = {}) {
   const t = String(text || '');
   const plain = t.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&');

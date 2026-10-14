@@ -1,8 +1,9 @@
 // Shared Microsoft Graph access: one MSAL cache per identity, sender pinned by UPN and checked against /me.
 import { PublicClientApplication } from '@azure/msal-node';
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { ownerMatch } from './kit-env.mjs';
+import { writeCache } from './cache-write.mjs';
 
 export const need = (k) => {
   const v = process.env[k];
@@ -33,7 +34,8 @@ export function msal(cache) {
     cache: { cachePlugin: {
       beforeCacheAccess: async (c) => { if (existsSync(cache)) c.tokenCache.deserialize(readFileSync(cache, 'utf8')); },
       // Entra rotates refresh tokens on silent refresh: without write-back the next run fails.
-      afterCacheAccess: async (c) => { if (c.cacheHasChanged) writeFileSync(cache, c.tokenCache.serialize(), { mode: 0o600 }); },
+      // Atomic and merged under flock: other processes share this file (cache-write.mjs, review #12).
+      afterCacheAccess: async (c) => { if (c.cacheHasChanged) writeCache(cache, c.tokenCache.serialize()); },
     } },
   });
 }

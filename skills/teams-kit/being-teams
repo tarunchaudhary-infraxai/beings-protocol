@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# being-teams: presence + Teams watcher (→ being-handle) + mail watcher + watchdog, as one host process.
-#   up | down | restart | status | doctor | logs [n] | handler [n] | inbox [n] | autostart on|off|status
+# being-teams up|down|restart|status|doctor|logs [n]|handler [n]|inbox [n]|autostart on|off|status
+# Presence + Teams watcher + mail watcher + watchdog as one process; with autostart on, systemd supervises it.
 set -euo pipefail
 
 KIT="${BEING_KIT_HOME:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)}"
@@ -12,27 +12,135 @@ STATE="${BEING_STATE_DIR:?set BEING_STATE_DIR in .env}"
 PIDF="$STATE/loop.pid"; LOG="$STATE/loop.log"; WM="$STATE/watermark"; MWM="$STATE/mail-watermark"; OWM="$STATE/owner-watermark"
 TICK="${BEING_TICK_SEC:-30}"; PRESENCE_EVERY=$(( 300 / TICK > 0 ? 300 / TICK : 1 ))   # presence every ~5 min, expiry 15 min
 COMMS="${BEING_COMMS_LOG:-$STATE/comms.jsonl}"
+HOOK="${HOOK_STATE:-$HOME/.local/state/graph-webhook}"; KICK="$HOOK/kick"
+# Log time with ms, for the per-stage latency trail (bash clock: no fork, and `date +%3N` is unreliable on uutils).
+ts() { local t=$EPOCHREALTIME; printf '%(%FT%T)T.%s%(%z)T' "${t%.*}" "${t:(-6):3}" "${t%.*}"; }
+# nap: sleep up to TICK, but return shortly after the Graph webhook writes a kick newer than KSEEN, so the full sweep runs
+# as the catch-up behind the fast path (which handles the kick itself, in its own process: see fastpath).
+KSEEN=""
+nap() {
+  local i k
+  for (( i = 0; i < TICK * 5; i++ )); do
+    k=""; read -r k 2>/dev/null <"$KICK" || true   # read, not cat: no fork per check
+    [[ "$k" != "$KSEEN" ]] && { KSEEN=$k; sleep 3; return 0; }
+    sleep 0.2
+  done
+  return 1
+}
 mkdir -p "$STATE"
 # A standby host (copy waiting for cutover) only offers read-only views.
 [[ -e "$STATE/STANDBY" && ! "${1:-status}" =~ ^(status|doctor|logs|inbox|handler)$ ]] && { echo "standby host: ${1:-} refused" >&2; exit 3; }
 
 alive() { [[ -f "$PIDF" ]] && kill -0 "$(cat "$PIDF")" 2>/dev/null; }
 UNIT="${BEING_NAME}-teams.service"; UNITF="$HOME/.config/systemd/user/$UNIT"
-via_systemd() { [[ -z "${BEING_TEAMS_SYSTEMD:-}" ]] && systemctl --user is-enabled -q "$UNIT" 2>/dev/null; }
+via_systemd() { systemctl --user is-enabled -q "$UNIT" 2>/dev/null; }
+# Stop a loop that is not the unit's (started by hand or by an older being-teams) and anything its process group left
+# behind (fast path, detect standbys, warm daemon). Handler runs and jobs are in their own sessions (setsid): untouched.
+loop_cleanup() {
+  [[ -f "$PIDF" ]] && { kill -- -"$(cat "$PIDF")" 2>/dev/null || kill "$(cat "$PIDF")" 2>/dev/null || true; }
+  [[ -f "$STATE/fast-warm.pid" ]] && { kill "$(cat "$STATE/fast-warm.pid")" 2>/dev/null || true; rm -f "$STATE/fast-warm.pid"; }
+  rm -f "$PIDF"
+}
 
-# Queue each new message once (dedup by id), tagging the lane; $1 seen-key prefix, $2 lane ("" or owner), $3 self id to drop.
+# Queue each new message once (dedup by id, under one lock), tagging the lane; $1 seen-key prefix, $2 lane, $3 self id.
+# Prints the newly queued messages as {"messages":[...]} (empty when all were already queued).
 enqueue() {
-  python3 -c '
+  flock "$STATE/enqueue.lock" python3 -c '
 import json,sys,os
 seen_f,q_f,prefix,lane,skip=sys.argv[1:6]
 seen=set(open(seen_f).read().split()) if os.path.exists(seen_f) else set()
+new=[]
 with open(q_f,"a") as q, open(seen_f,"a") as sf:
     for m in json.load(sys.stdin)["messages"]:
         if lane and (skip in m["chatId"] or m.get("fromId")==skip or m.get("addressedBy")=="reaction"): continue
         k=prefix+(m.get("messageId") or m["chatId"]+"@"+m["at"])
         if k in seen: continue
         if lane: m["lane"]=lane
-        q.write(json.dumps(m)+"\n"); sf.write(k+"\n"); seen.add(k)' "$STATE/queued-ids.txt" "$STATE/queue.jsonl" "$1" "$2" "$3"
+        q.write(json.dumps(m)+"\n"); sf.write(k+"\n"); seen.add(k); new.append(m)
+print(json.dumps({"messages":new}))' "$STATE/queued-ids.txt" "$STATE/queue.jsonl" "$1" "$2" "$3"
+}
+
+# Hand freshly detected messages ($1: teams-detect JSON, $2: where from) to the queue, 👀 and triage.
+dispatch() {
+  local new cnt pre=0
+  # On the fast path the pre-connected 👀 sender gets the detect output first (it marks each message once on its own).
+  # (one line: pretty-printed JSON has no newline inside strings; a very large batch takes the plain path instead).
+  if [[ -n "${FP_S:-}" && ${#1} -lt 60000 ]] && fp_send seen "$FP_S" "${1//$'\n'/}"; then
+    FP_S=""; pre=1; fp_spawn seen
+  fi
+  new=$(printf '%s\n' "$1" | enqueue "" "" "")
+  cnt=$(printf '%s' "$new" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["messages"]))')
+  if (( cnt > 0 )); then
+    # Instant 👀 on the owner's 1:1 messages, before triage (background; never blocks the loop).
+    (( pre )) || ( printf '%s\n' "$new" | node teams-seen.mjs 2>>"$LOG"; echo "$(ts) seen step done ($2)" >>"$LOG" ) &
+    echo "$(ts) new message(s) queued ($cnt, $2)" >>"$LOG"
+  fi
+  # A triage run also drains anything a lock race left behind in the queue.
+  [[ -s "$STATE/queue.jsonl" ]] && { setsid "$KIT/being-handle" triage </dev/null >/dev/null 2>&1 & }
+  return 0
+}
+
+# Warm fast-model sessions for triage and voice (fast-warm.mjs). Runs in the loop's process group, so `down` stops it and its
+# lane processes; restarted here whenever it is gone. Without it being-handle takes the cold path.
+warm_on() { [[ "${BEING_FAST_CLIENT:-codex}" == claude && "${BEING_FAST_WARM:-1}" == 1 ]]; }
+warm_ensure() {
+  warm_on || return 0
+  [[ -f "$STATE/fast-warm.pid" ]] && kill -0 "$(cat "$STATE/fast-warm.pid")" 2>/dev/null && return 0
+  echo "$(ts) fast-warm daemon (re)started" >>"$LOG"
+  node "$KIT/fast-warm.mjs" serve </dev/null >>"$LOG" 2>&1 &
+  ( sleep 1; "$KIT/being-handle" warm </dev/null >/dev/null 2>&1 ) &   # owner lane's process, ahead of the first message
+}
+
+# Webhook fast path, in its own process: fetch only the notified messages; the full sweep still catches up behind it.
+# Pre-connected standbys wait on their own FIFOs (README "Script notes"); without one the plain command runs.
+fp_spawn() {   # $1 detect|seen
+  local f="$STATE/fp-$1.fifo"
+  [[ -p "$f" ]] || { rm -f "$f"; mkfifo -m 600 "$f" || return 1; }
+  rm -f "$f.ready"
+  if [[ $1 == detect ]]; then
+    FP_N=$(( FP_N + 1 )); FP_OUT="$STATE/fp-detect.$(( FP_N % 4 )).out"
+    node teams-detect.mjs --notified "$HOOK/queue.jsonl" "$STATE/hook-offset" --wait "$f" >"$FP_OUT" 2>>"$LOG" </dev/null & FP_D=$!; FP_DBORN=$SECONDS
+  else
+    node teams-seen.mjs --wait "$f" 2>>"$LOG" </dev/null & FP_S=$!; FP_SBORN=$SECONDS
+  fi
+}
+fp_retire() {   # $1 detect|seen: an idle standby has touched nothing yet, so stopping it is safe
+  local p; if [[ $1 == detect ]]; then p=$FP_D; FP_D=""; else p=$FP_S; FP_S=""; fi
+  [[ -n $p ]] && { kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; }
+  rm -f "$STATE/fp-$1.fifo" "$STATE/fp-$1.fifo.ready"   # a fresh pipe: nothing stale left in it for the next standby
+  return 0
+}
+# $1 detect|seen, $2 its pid, $3 the line. Only to a standby that holds its FIFO open (.ready = its pid): a line written to
+# a FIFO nobody holds is dropped. The read-write open never blocks, even while the standby is still signing in.
+fp_send() {
+  local r=""; [[ -n $2 ]] && read -r r 2>/dev/null <"$STATE/fp-$1.fifo.ready"
+  [[ -n $r && $r == "$2" ]] && kill -0 "$2" 2>/dev/null || return 1
+  { printf '%s\n' "$3" >&5; } 5<>"$STATE/fp-$1.fifo"
+}
+fastpath() {
+  set +e
+  local k seen out rc how FP_D="" FP_S="" FP_DBORN=0 FP_SBORN=0 FP_N=0 FP_OUT=""
+  seen=$(cat "$KICK" 2>/dev/null)
+  fp_retire detect; fp_retire seen; fp_spawn detect; fp_spawn seen
+  while :; do
+    k=""; read -r k 2>/dev/null <"$KICK"
+    if [[ "$k" == "$seen" ]]; then
+      if (( SECONDS - FP_DBORN > 20 )) && { (( SECONDS - FP_DBORN > 600 )) || ! kill -0 "$FP_D" 2>/dev/null; }; then fp_retire detect; fp_spawn detect; fi
+      if (( SECONDS - FP_SBORN > 20 )) && { (( SECONDS - FP_SBORN > 600 )) || ! kill -0 "$FP_S" 2>/dev/null; }; then fp_retire seen; fp_spawn seen; fi
+      sleep 0.1; continue
+    fi
+    seen=$k; echo "$(ts) kick seen (written $k)" >>"$LOG"
+    if fp_send detect "$FP_D" go; then
+      wait "$FP_D"; rc=$?; out=$(<"$FP_OUT"); FP_D=""; how=pre-connected
+      fp_spawn detect
+      # A standby that failed (sign-in, crash) fails before it reads the offset: the plain command can still take the kick.
+      (( rc == 0 || rc == 10 || rc == 11 )) || { out=$(node teams-detect.mjs --notified "$HOOK/queue.jsonl" "$STATE/hook-offset" 2>>"$LOG"); rc=$?; how="cold after standby failure"; }
+    else
+      out=$(node teams-detect.mjs --notified "$HOOK/queue.jsonl" "$STATE/hook-offset" 2>>"$LOG"); rc=$?; how=cold
+    fi
+    echo "$(ts) notified detect done (rc $rc, $how)" >>"$LOG"
+    (( rc == 10 )) && dispatch "$out" webhook
+  done
 }
 
 loop() {
@@ -40,7 +148,11 @@ loop() {
   [[ -s "$WM" ]] || date -u +%FT%TZ >"$WM"
   [[ -s "$MWM" ]] || date -u +%FT%TZ >"$MWM"
   local n=0 start out rc oout orc mrc
+  [[ -s "$STATE/hook-offset" ]] || stat -c %s "$HOOK/queue.jsonl" >"$STATE/hook-offset" 2>/dev/null || true
+  KSEEN=$(cat "$KICK" 2>/dev/null || true)
+  fastpath &
   while :; do
+    warm_ensure
     # Open today's fast (Codex) session ahead of the first message.
     if [[ "${BEING_FAST_CLIENT:-codex}" == codex && ! -s "$STATE/fast-daily/$(date +%F).id" ]] && (( n % 20 == 0 )); then
       setsid "$KIT/being-handle" warm </dev/null >/dev/null 2>&1 &
@@ -51,9 +163,7 @@ loop() {
     start=$(date -u +%FT%TZ)
     set +e; out=$(node teams-detect.mjs "$(cat "$WM")" 2>>"$LOG"); rc=$?; set -e
     if (( rc == 10 || rc == 11 )); then
-      printf '%s\n' "$out" | enqueue "" "" ""
-      echo "$(date -Is) new message(s) queued" >>"$LOG"
-      setsid "$KIT/being-handle" triage </dev/null >/dev/null 2>&1 &
+      dispatch "$out" poll
       (( rc == 10 )) && rc=0
     fi
     (( rc == 0 )) && echo "$start" >"$WM"
@@ -64,7 +174,7 @@ loop() {
         node teams-detect.mjs "$(cat "$OWM")" 2>>"$LOG"); orc=$?; set -e
       if (( orc == 10 || orc == 11 )); then
         local self; self=$(cat "$STATE/being-oid" 2>/dev/null || echo "-")
-        printf '%s\n' "$oout" | enqueue "o:" owner "$self"
+        printf '%s\n' "$oout" | enqueue "o:" owner "$self" >/dev/null
         setsid "$KIT/being-handle" triage </dev/null >/dev/null 2>&1 &
         (( orc == 10 )) && orc=0
       fi
@@ -76,9 +186,14 @@ loop() {
       if (( mrc == 10 )) && command -v notify-send >/dev/null; then notify-send "$BEING_NAME · Mail" "New mail" || true; fi
       (( mrc == 0 || mrc == 10 )) && echo "$start" >"$MWM"
     fi
+    # Failed work and sends get another go (at most BEING_RETRY_MAX tries in all, with backoff), then one alert: being-retry.
+    python3 "$KIT/being-retry" run >>"$LOG" 2>&1 || echo "$(date -Is) retry stage failed" >>"$LOG"
     (( n % 4 == 0 )) && { python3 "$KIT/being-watchdog" 2>>"$LOG" || echo "$(date -Is) watchdog failed" >>"$LOG"; }
+    # Warm lanes pick up a changed digest (board, DECISIONS.md, GOALS.md, SOUL.md) ahead of the next message: being-handle
+    # warm restarts only the lanes whose prompt changed (soul.py digest key), and skips the run while triage holds its lock.
+    warm_on && (( n % 2 == 1 )) && { setsid "$KIT/being-handle" warm </dev/null >/dev/null 2>&1 & }
     (( n % 120 == 0 )) && { node scope.mjs prune >/dev/null 2>>"$LOG" || true; }
-    n=$((n + 1)); sleep "$TICK"
+    n=$((n + 1)); nap || true
   done
 }
 
@@ -90,15 +205,16 @@ Description=$BEING_NAME Teams presence + message watcher
 StartLimitIntervalSec=0
 
 [Service]
-Type=forking
-Environment=BEING_TEAMS_SYSTEMD=1
+Type=simple
 Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=$KIT/being-teams up
-ExecStop=$KIT/being-teams down
-PIDFile=$PIDF
+Environment=HOME=$HOME
+ExecStart=$KIT/being-teams __run
+# Stops the loop's process group only; handler runs and jobs (own sessions) finish their work.
+ExecStop=$KIT/being-teams __stop
 KillMode=process
-Restart=on-failure
-RestartSec=30
+TimeoutStopSec=20
+Restart=always
+RestartSec=10
 
 [Install]
 WantedBy=default.target
@@ -107,21 +223,42 @@ UNIT
 
 case "${1:-status}" in
   up)
-    if via_systemd; then systemctl --user start "$UNIT"; echo "up (systemd)"; exit 0; fi
+    if via_systemd; then
+      # A loop outside the unit (hand-started) would run twice: stop it first.
+      if alive && [[ "$(cat "$PIDF")" != "$(systemctl --user show -p MainPID --value "$UNIT")" ]]; then loop_cleanup; fi
+      systemctl --user start "$UNIT"; echo "up (systemd)"; exit 0
+    fi
     alive && { echo "already up (pid $(cat "$PIDF"))"; exit 0; }
     # Remember the Being's own object id so the delegate lane can drop the owner's chat with the Being.
     (cd "$KIT" && node teams-read.mjs --whoami 2>/dev/null | awk '{print $3}' >"$STATE/being-oid") || true
     setsid "$0" __loop >>"$LOG" 2>&1 </dev/null & echo $! >"$PIDF"
     sleep 2; if alive; then echo "up (pid $(cat "$PIDF"))"; else echo "failed to start; see $LOG"; exit 1; fi ;;
   down)
-    if via_systemd; then systemctl --user stop "$UNIT"; echo down; exit 0; fi
-    if alive; then kill -- -"$(cat "$PIDF")" 2>/dev/null || kill "$(cat "$PIDF")"; fi
-    rm -f "$PIDF"; (cd "$KIT" && node teams-presence.mjs offline) || true; echo down ;;
-  restart) "$0" down; "$0" up ;;
+    if via_systemd; then systemctl --user stop "$UNIT"; alive && loop_cleanup; echo down; exit 0; fi
+    # The warm daemon is in the loop's group; this also stops one left over from an older loop.
+    loop_cleanup; (cd "$KIT" && node teams-presence.mjs offline) || true; echo down ;;
+  restart)
+    if via_systemd; then
+      if alive && [[ "$(cat "$PIDF")" != "$(systemctl --user show -p MainPID --value "$UNIT")" ]]; then loop_cleanup; fi
+      systemctl --user restart "$UNIT"; echo "restarted (systemd)"; exit 0
+    fi
+    "$0" down; "$0" up ;;
+  __run)   # the unit's foreground process (Type=simple): its pid is the unit's MainPID
+    unset BEING_TEAMS_SYSTEMD   # children (handlers, jobs, sessions) must not inherit it
+    exec >>"$LOG" 2>&1 </dev/null
+    loop_cleanup   # whatever a previous run left behind (a crash skips ExecStop)
+    (cd "$KIT" && node teams-read.mjs --whoami 2>/dev/null | awk '{print $3}' >"$STATE/being-oid") || true
+    echo $$ >"$PIDF"; echo "$(ts) loop started under systemd (pid $$)"
+    loop ;;
+  __stop)   # ExecStop: the loop's process group (systemd puts MainPID in its own session)
+    [[ -n "${MAINPID:-}" ]] && kill -- -"$MAINPID" 2>/dev/null
+    loop_cleanup; (cd "$KIT" && node teams-presence.mjs offline) || true ;;
   status)
     alive && echo "loop: up (pid $(cat "$PIDF"))" || echo "loop: down"
+    echo "unit: $(systemctl --user is-enabled "$UNIT" 2>/dev/null || echo not-installed) / $(systemctl --user is-active "$UNIT" 2>/dev/null || true) (MainPID $(systemctl --user show -p MainPID --value "$UNIT" 2>/dev/null || echo -))"
     echo "watermark: teams $(cat "$WM" 2>/dev/null || echo none) · mail $(cat "$MWM" 2>/dev/null || echo none)"
-    (cd "$KIT" && echo "presence: $(node teams-presence.mjs status 2>/dev/null || echo unknown)") ;;
+    (cd "$KIT" && echo "presence: $(node teams-presence.mjs status 2>/dev/null || echo unknown)")
+    echo "$(python3 "$KIT/being-sessions" 2>/dev/null | head -1 || echo 'sessions: unknown')" ;;
   doctor)   # how far the guarantees in GUARDRAILS.md "Threat model" hold on this host; exit 1 on any FAIL
     python3 - "$KIT" "$STATE" "${BEING_CACHE:-}" "${OWNER_CACHE:-}" "${BEING_MODEL_USER:-}" "${BEING_OWNER_DELEGATE:-0}" "${BEING_SINGLE_USER_ACK:-0}" <<'PY' ;;
 import os,sys,stat,pwd,shutil,subprocess
@@ -171,12 +308,13 @@ for l in sys.stdin:
   autostart)
     case "${2:-status}" in
       on)  write_unit; systemctl --user daemon-reload; systemctl --user enable "$UNIT" >/dev/null
-           if alive && ! systemctl --user is-active -q "$UNIT"; then BEING_TEAMS_SYSTEMD=1 "$0" down >/dev/null; fi
+           if alive && ! systemctl --user is-active -q "$UNIT"; then loop_cleanup; fi
            systemctl --user start "$UNIT"; "$0" autostart status ;;
       off) systemctl --user disable "$UNIT" >/dev/null 2>&1 || true; echo "autostart off (loop left as is)" ;;
       status) echo "unit: $(systemctl --user is-enabled "$UNIT" 2>/dev/null || echo not-installed) / $(systemctl --user is-active "$UNIT" 2>/dev/null || true)" ;;
       *) echo "usage: being-teams autostart on|off|status"; exit 2 ;;
     esac ;;
   __loop) loop ;;
+  __fastpath) cd "$KIT"; fastpath ;;   # the webhook fast path alone (for tests; the loop runs it itself)
   *) echo "usage: being-teams up|down|restart|status|doctor|logs [n]|handler [n]|inbox [n]|autostart on|off|status"; exit 2 ;;
 esac

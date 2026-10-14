@@ -1,0 +1,141 @@
+// being-job: raw commands and networked codex jobs need the full scope (review #4); a job cannot widen its own scope or
+// redirect its result by rewriting its record (review #5). Throwaway kit and state, fake claude (nothing is sent anywhere).
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const KIT = path.dirname(fileURLToPath(import.meta.url));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Fake claude for an agent job: writes its result and, if TAMPER is in the task, rewrites its own job record to full scope
+// and the owner's chat (what a prompt-injected teammate job would try).
+const FAKE = `#!/usr/bin/env node
+const fs = require('fs');
+const prompt = process.argv[process.argv.length - 1] || '';
+const res = (prompt.match(/RESULT file: (\\S+)/) || [])[1];
+if (prompt.includes('TAMPER') && res) {
+  const jf = res.replace(/\\.result\\.md$/, '.json'); const d = JSON.parse(fs.readFileSync(jf, 'utf8'));
+  d.scope = 'full'; d.notify = '19:owner-chat'; fs.writeFileSync(jf, JSON.stringify(d));
+}
+if (res) fs.writeFileSync(res, 'done');
+`;
+
+function kit(t) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'job-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const k = path.join(dir, 'kit'), st = path.join(dir, 'state'), bin = path.join(dir, 'bin');
+  for (const d of [k, st, bin, path.join(dir, 'ws'), path.join(dir, 'home')]) mkdirSync(d, { recursive: true });
+  for (const f of ['being-job', 'scope.mjs', 'kit-env.mjs', 'team-fence.py']) copyFileSync(path.join(KIT, f), path.join(k, f));
+  chmodSync(path.join(k, 'being-job'), 0o755);
+  writeFileSync(path.join(bin, 'claude'), FAKE); chmodSync(path.join(bin, 'claude'), 0o755);
+  writeFileSync(path.join(k, '.env'), `BEING_NAME=Testbeing\nBEING_STATE_DIR=${st}\nBEING_WORKSPACE=${path.join(dir, 'ws')}\nBEING_SINGLE_USER_ACK=1\n`);
+  const host = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(BEING_|OWNER_|M365_|HOOK_)/.test(key)));
+  const env = { ...host, PATH: `${bin}:${process.env.PATH}`, HOME: path.join(dir, 'home'), BEING_STATE_DIR: st };
+  const mint = (scope) => spawnSync('node', [path.join(k, 'scope.mjs'), 'mint', scope], { env, encoding: 'utf8' }).stdout.trim();
+  const job = (scope, args) => spawnSync(path.join(k, 'being-job'), args, { env: { ...env, BEING_SEND_TOKEN: scope ? mint(scope) : '' }, encoding: 'utf8' });
+  const work = () => (existsSync(path.join(st, 'work.jsonl')) ? readFileSync(path.join(st, 'work.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+  const until = async (f, ms = 15000) => { for (let i = 0; i < ms / 100 && !f(); i++) await sleep(100); return f(); };
+  return { dir, k, st, env, job, work, until };
+}
+
+test('#4: being-job run and codex --network are refused without the full scope; allowed with it', async (t) => {
+  const { dir, job, work, until } = kit(t);
+  const pwn = path.join(dir, 'PWNED');
+  for (const scope of ['chats:19:team', 'owner-only', '']) {
+    const r = job(scope, ['run', 'x', '--notify', '19:team', '--', 'sh', '-c', `touch ${pwn}`]);
+    assert.equal(r.status, 3, `${scope}: ${r.stderr}`); assert.match(r.stderr, /refused/);
+    const c = job(scope, ['codex', 'x', '--network', '--notify', '19:team', 'task']);
+    assert.equal(c.status, 3); assert.match(c.stderr, /--network needs the full scope/);
+  }
+  await sleep(300); assert.ok(!existsSync(pwn));
+  const ok = job('full', ['run', 'y', '--notify', '19:owner-chat', '--', 'true']);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.ok(await until(() => work().length === 1)); assert.equal(work()[0].status, 'done');
+});
+
+test("#4: the teammate allowlist has no raw being-job", () => {
+  const src = readFileSync(path.join(KIT, 'being-handle'), 'utf8');
+  assert.ok(!src.includes('Bash($k/being-job:*)'));
+  assert.match(src, /Bash\(\$k\/being-job agent:\*\)/);
+});
+
+test('#5: a teammate job that rewrites its own record to full scope still reports with its signed teammate scope', async (t) => {
+  const { st, job, work, until } = kit(t);
+  const r = job('chats:19:team', ['agent', 'sneaky', '--notify', '19:team', 'TAMPER please']);
+  assert.equal(r.status, 0, r.stderr);
+  const id = r.stdout.trim();
+  assert.ok(await until(() => work().length === 1), 'job finished');
+  const ev = work()[0];
+  assert.equal(ev.scope, 'chats:19:team'); assert.equal(ev.chatId, '19:team');
+  assert.equal(JSON.parse(readFileSync(path.join(st, 'jobs', id + '.json'), 'utf8')).scope, 'full');   // the tampered record, ignored
+});
+
+test('#5: a job record nobody signed (or a re-signed one) never runs', async (t) => {
+  const { k, st, env, job } = kit(t);
+  mkdirSync(path.join(st, 'jobs'), { recursive: true });
+  const id = '1012-200000-forged';
+  writeFileSync(path.join(st, 'jobs', id + '.json'), JSON.stringify({ id, kind: 'run', name: 'forged', notify: '19:owner-chat', scope: 'full',
+    payload: ['sh', '-c', 'echo pwned > ' + path.join(st, 'PWNED')], status: 'running', started: new Date().toISOString() }));
+  const r = spawnSync(path.join(k, 'being-job'), ['__exec', id], { env, encoding: 'utf8' });
+  assert.equal(r.status, 3);
+  assert.ok(!existsSync(path.join(st, 'PWNED')));
+  assert.equal(JSON.parse(readFileSync(path.join(st, 'jobs', id + '.json'), 'utf8')).status, 'refused-unsigned');
+  // A signed teammate job cannot be re-signed with another scope (records are write-once).
+  const a = job('chats:19:team', ['agent', 'one', '--notify', '19:team', 'task']); const aid = a.stdout.trim();
+  const re = spawnSync('node', [path.join(k, 'scope.mjs'), 'job-sign', aid, '19:owner-chat'], { env, encoding: 'utf8' });
+  assert.notEqual(re.status, 0);
+  const s = JSON.parse(spawnSync('node', [path.join(k, 'scope.mjs'), 'job-scope', aid], { env, encoding: 'utf8' }).stdout);
+  assert.deepEqual(s, { scope: 'chats:19:team', notify: '19:team' });
+  // A signed record whose scope was edited in place fails the MAC.
+  const f = path.join(st, 'job-scopes', aid + '.json'); const g = JSON.parse(readFileSync(f, 'utf8'));
+  writeFileSync(f, JSON.stringify({ ...g, scope: 'full' }));
+  assert.equal(spawnSync('node', [path.join(k, 'scope.mjs'), 'job-scope', aid], { env, encoding: 'utf8' }).status, 3);
+});
+
+test('S3: a bad or expired grant starts no job and lists none (never the owner lane)', (t) => {
+  const { k, env } = kit(t);
+  const bad = (args) => spawnSync(path.join(k, 'being-job'), args, { env: { ...env, BEING_SEND_TOKEN: 'made-up-token' }, encoding: 'utf8' });
+  const r = bad(['agent', 'x', '--notify', '19:owner-chat', 'task']);
+  assert.equal(r.status, 3, r.stderr); assert.match(r.stderr, /not valid/);
+  assert.equal(bad(['run', 'x', '--notify', '19:owner-chat', '--', 'true']).status, 3);
+});
+
+test('a job whose start fails before the run is recorded as failed-start, with the reason in its exec log', async (t) => {
+  const { k, st, job, until } = kit(t);
+  rmSync(path.join(k, 'team-fence.py'));   // a teammate job cannot build its fence settings
+  const r = job('chats:19:team', ['agent', 'nostart', '--notify', '19:team', 'task']);
+  assert.equal(r.status, 0, r.stderr);
+  const id = r.stdout.trim(), rec = () => JSON.parse(readFileSync(path.join(st, 'jobs', id + '.json'), 'utf8'));
+  assert.ok(await until(() => rec().status !== 'running'), `still running: ${JSON.stringify(rec())}`);
+  assert.equal(rec().status, 'failed-start');
+  assert.match(readFileSync(path.join(st, 'jobs', id + '.exec.log'), 'utf8'), /team-fence\.py/);
+});
+
+test('a teammate job whose record is edited to ask for network is refused and recorded as refused-scope, not left running', async (t) => {
+  const { k, st, env, job, work, until } = kit(t);
+  const r = job('chats:19:team', ['agent', 'netless', '--notify', '19:team', 'task']); const id = r.stdout.trim();
+  assert.ok(await until(() => work().length === 1), 'job finished');
+  const jf = path.join(st, 'jobs', id + '.json'); const d = JSON.parse(readFileSync(jf, 'utf8'));
+  d.network = true; d.status = 'running'; writeFileSync(jf, JSON.stringify(d));
+  const x = spawnSync(path.join(k, 'being-job'), ['__exec', id], { env, encoding: 'utf8' });
+  assert.equal(x.status, 3);
+  assert.equal(JSON.parse(readFileSync(jf, 'utf8')).status, 'refused-scope');
+});
+
+test('a teammate job refused because team-sync failed revokes its grant (no live grant left behind)', async (t) => {
+  const { k, st, env, until } = kit(t);
+  const grants = () => (existsSync(path.join(st, 'grants')) ? spawnSync('ls', [path.join(st, 'grants')], { encoding: 'utf8' }).stdout.split('\n').filter((f) => f.endsWith('.json')) : []);
+  const tok = spawnSync('node', [path.join(k, 'scope.mjs'), 'mint', 'chats:19:team'], { env, encoding: 'utf8' }).stdout.trim();
+  const before = grants().length;
+  const r = spawnSync(path.join(k, 'being-job'), ['agent', 'synced', '--notify', '19:team', 'task'], { encoding: 'utf8',
+    env: { ...env, BEING_SEND_TOKEN: tok, BEING_ISOLATION: 'bwrap', BEING_ISOLATION_LANES: 'team' } });
+  assert.equal(r.status, 0, r.stderr);
+  const jf = path.join(st, 'jobs', r.stdout.trim() + '.json');
+  assert.ok(await until(() => JSON.parse(readFileSync(jf, 'utf8')).status !== 'running'), 'job settled');
+  assert.equal(JSON.parse(readFileSync(jf, 'utf8')).status, 'refused-team-sync');
+  assert.equal(grants().length, before, 'the job grant is revoked');
+});
