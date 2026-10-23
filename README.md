@@ -193,12 +193,11 @@ Session starts
 - **Hand-editable** — open notes in Obsidian, VS Code, Vim. Fix a typo, correct a fact. Watcher reindexes automatically.
 - **Human-readable** — you can actually read what your Being remembers. No binary DB.
 - **Obsidian-compatible** — point a vault at `memory-graph/` and get a visual knowledge graph for free.
-- **Rebuildable** — the SQLite index is a cache. Lose it, run `basic-memory sync`, rebuilds from markdown.
+- **Rebuildable** — the SQLite index is a cache. Lose it, run `bin/being-bm-repair`, rebuilds from markdown.
 
-**Claude Code hooks** automate knowledge capture:
-- **PreCompact** — saves key facts before context compression (no more amnesia mid-session)
-- **Session End** — captures decisions, learnings, unresolved questions
+**Claude Code hooks** bring memory into each session:
 - **Session Start** — recalls relevant context via `search_notes`
+- **Prompt Submit** — today's date and a nudge to check current goals
 
 Everything stays local — SQLite FTS5 index + fastembed embeddings (bge-small-en-v1.5), no data leaves your machine.
 

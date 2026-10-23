@@ -8,7 +8,8 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 fails=0; ok() { echo "  ok  $1"; }; bad() { echo "  FAIL $1"; fails=$((fails + 1)); }
 # Stub basic-memory so install.sh never bootstraps uv from the network.
 mkdir -p "$TMP/stub"; printf '#!/bin/sh\nexit 0\n' >"$TMP/stub/basic-memory"; chmod +x "$TMP/stub/basic-memory"
-inst() { (cd "$1" && shift && HOME="$TMP/home" PATH="$TMP/stub:$PATH" "${TEST_BASH:-bash}" "$REPO/install.sh" "$@" --yes --no-memory) >"$TMP/out" 2>&1; }
+INSTALL="$REPO/install.sh"
+inst() { (cd "$1" && shift && HOME="$TMP/home" PATH="$TMP/stub:$PATH" BEING_NO_SYSTEMD=1 "${TEST_BASH:-bash}" "$INSTALL" "$@" --yes --no-memory) >"$TMP/out" 2>&1; }
 plain() { rm -rf "$1"; mkdir -p "$1/.beings"; git -C "$1" init -q; }
 # Portable (GNU and BSD/macOS): no stat -c, sed -i or sha256sum.
 sum() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi; }
@@ -72,5 +73,93 @@ inst "$h" --update --name nova --with bogus && bad "unknown component accepted" 
 # 7. --check reports and writes nothing.
 before=$(tree "$TMP/case2"); inst "$TMP/case2" --check
 grep -q "kit 0.1.0" "$TMP/out" && [[ "$(tree "$TMP/case2")" == "$before" ]] && ok "--check is read-only" || bad "--check"
+
+# 8. Operations: tools, templates, secrets folder, shared skills, auto-memory link, global guardrails.
+h="$TMP/case1"; G="$TMP/home"
+for f in bin/being-config bin/being-memory-sync bin/being-session-registry bin/publish-check ops/kit-templates/stack-runner; do
+  [[ -x "$h/$f" ]] || bad "not executable: $f"
+done
+for f in ops/kit-templates/systemd/standby-gate.conf.example ops/kit-templates/jobs/scheduled-job/run.sh ops/kit-templates/being.toml.example; do
+  [[ -f "$h/$f" ]] || bad "missing $f"
+done
+grep -qF "$(cd "$h" && pwd -P)/ops/teams-kit/state/STANDBY" "$h/ops/kit-templates/systemd/standby-gate.conf.example" && ok "unit templates filled with the home path" || bad "unit template placeholders"
+[[ "$(find "$G/.config/nova" -prune -perm 0700 | wc -l)" == 1 ]] && ok "secrets folder ~/.config/nova is 0700" || bad "secrets folder"
+[[ -L "$h/.claude/skills" && "$(readlink "$h/.claude/skills")" == ../.agents/skills ]] && ok "shared skills folder" || bad "shared skills"
+[[ -L "$h/.beings/auto-memory-live" ]] && grep -qxF ".beings/auto-memory-live" "$h/.gitignore" && ok "auto-memory link, gitignored" || bad "auto-memory link"
+for f in "$G/.claude/CLAUDE.md" "$G/.codex/instructions.md" "$G/.codex/AGENTS.md"; do
+  [[ "$(grep -c 'beings-kit:guardrails begin' "$f" 2>/dev/null)" == 1 ]] || bad "guardrails block count in $f"
+done
+grep -q "Never claim a check passed" "$G/.claude/CLAUDE.md" && ok "guardrails written once for Claude Code and Codex" || bad "guardrails content"
+
+# 9. --update refreshes the block from .beings/GUARDRAILS.md; text around it is kept.
+echo "my own global note" >>"$G/.claude/CLAUDE.md"
+echo "10. **House rule.** Always say which box you are on." >>"$h/.beings/GUARDRAILS.md"
+inst "$h" --update --with operations
+grep -q "House rule" "$G/.claude/CLAUDE.md" && grep -q "House rule" "$G/.codex/instructions.md" && grep -q "my own global note" "$G/.claude/CLAUDE.md" \
+  && [[ "$(grep -c 'beings-kit:guardrails begin' "$G/.claude/CLAUDE.md")" == 1 ]] && ok "--update refreshed the guardrails block in place" || bad "guardrails refresh"
+
+# 10. --config being.toml: name, owner, access and components come from the file; flags win.
+h="$TMP/cfg"; plain "$h"
+cat >"$TMP/being.toml" <<'TOML'
+[being]
+name = "kira"
+owner = "Ana Lee"
+track_private = true
+[kit]
+with = ["operations"]
+[access]
+allow = ["teams-owner-chat", "memory"]
+TOML
+inst "$h" --update --config "$TMP/being.toml" && [[ -x "$h/bin/kira" ]] && grep -q "Ana Lee" "$h/.beings/AUTONOMY-MATRIX.md" \
+  && cmp -s "$TMP/being.toml" "$h/being.toml" && ok "--config: name, owner, components, being.toml copied" || bad "--config: $(tail -3 "$TMP/out")"
+! grep -qxF ".beings-local/" "$h/.gitignore" 2>/dev/null && ok "track_private: .beings-local/ not ignored" || bad "track_private"
+grep -q "teams-owner-chat, memory" "$TMP/out" && ok "access list shown at install" || bad "access list not shown"
+h="$TMP/cfg2"; plain "$h"; inst "$h" --update --config "$TMP/being.toml" --owner "Sam Lee" --name nova
+[[ -x "$h/bin/nova" ]] && grep -q "Sam Lee" "$h/.beings/AUTONOMY-MATRIX.md" && ok "flags win over --config" || bad "flag precedence"
+printf '[being]\nname = {x = 1}\n' >"$TMP/bad.toml"; h="$TMP/cfg3"; plain "$h"; before=$(tree "$h")
+inst "$h" --update --config "$TMP/bad.toml" && bad "bad being.toml accepted" || { [[ "$(tree "$h")" == "$before" ]] && ok "bad being.toml refused, nothing written" || bad "bad config wrote files"; }
+
+# 11. Memory hooks: echo-only reminders removed, recall + date kept, the user's own hooks untouched.
+h="$TMP/hooks"; plain "$h"; mkdir -p "$h/.claude"; echo "# CLAUDE.md" >"$h/CLAUDE.md"
+cat >"$h/.claude/settings.local.json" <<'JSON'
+{"hooks": {
+ "PreCompact": [{"matcher": "", "hooks": [{"type": "command", "command": "echo 'MEMORY PRESERVATION: Context is about to be compressed.'"}]}],
+ "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "echo 'SESSION END: Write a session summary note'"}]}],
+ "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo 'AUTONOMY CHECK: Before running this shell command'"}]},
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "my-own-guard"}]}],
+ "PostToolUse": [{"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "echo 'MEMORY CHECK: You just modified a file.'"}]}]
+}}
+JSON
+inst "$h" --update --name nova --with operations
+python3 - "$h/.claude/settings.local.json" <<'PY' && ok "old reminder hooks removed, own hooks kept" || bad "hook migration: $(cat "$h/.claude/settings.local.json")"
+import json, sys
+d = json.load(open(sys.argv[1]))["hooks"]
+assert sorted(d) == ["PreToolUse", "SessionStart", "UserPromptSubmit"], sorted(d)
+assert [c["command"] for h in d["PreToolUse"] for c in h["hooks"]] == ["my-own-guard"]
+PY
+
+# 12. Generic component: skills/<name>/ copied to ops/<name>/ and its kit-install.sh hook runs with the settings.
+K="$TMP/kitcopy"; mkdir -p "$K"; (cd "$REPO" && tar --exclude=.git --exclude=node_modules -cf - .) | (cd "$K" && tar -xf -)
+mkdir -p "$K/skills/demo"; printf '#!/bin/sh
+echo demo
+' >"$K/skills/demo/demo-tool"; chmod +x "$K/skills/demo/demo-tool"
+cat >"$K/skills/demo/kit-install.sh" <<'HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s|%s|%s|%s|%s\n' "$1" "$BEING_NAME" "$OWNER_NAME" "$BEING_ACCESS" "$BEING_KIT_UPDATE" >>"$1/ops/demo/hook.log"
+HOOK
+INSTALL="$K/install.sh"; h="$TMP/comp"; plain "$h"
+inst "$h" --update --config "$TMP/being.toml" --with demo
+[[ -x "$h/ops/demo/demo-tool" ]] && grep -qF "$(cd "$h" && pwd -P)|kira|Ana Lee|teams-owner-chat,memory|1" "$h/ops/demo/hook.log" \
+  && ok "component copied and its hook ran with the settings" || bad "component: $(tail -3 "$TMP/out")"
+inst "$h" --update --with nosuchthing && bad "unknown component accepted" || ok "unknown component refused"
+INSTALL="$REPO/install.sh"
+
+# 13. Status line: set when absent, an existing one is kept.
+h="$TMP/sl"; plain "$h"; rm -f "$G/.claude/settings.json"
+inst "$h" --update --name nova --with statusline
+grep -q 'beings-statusline.sh' "$G/.claude/settings.json" && [[ -x "$G/.claude/beings-statusline.sh" ]] && ok "status line installed" || bad "status line"
+echo '{"statusLine": {"type": "command", "command": "mine"}}' >"$G/.claude/settings.json"
+inst "$h" --update --name nova --with statusline; grep -q '"mine"' "$G/.claude/settings.json" && ok "existing status line kept" || bad "status line overwritten"
 
 (( fails == 0 )) && echo "install-kit: all checks passed" || { echo "install-kit: $fails failed"; exit 1; }

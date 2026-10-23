@@ -1,0 +1,4 @@
+# Add with `crontab -e`. CRON_TZ sets the schedule's timezone where cron supports it (cronie); else use a systemd timer
+# with OnCalendar=Mon,Thu *-*-* 10:30:00 <Area/City>. Example: Mondays and Thursdays at 10:30.
+CRON_TZ=<Area/City>
+30 10 * * 1,4 <being-home>/ops/<job>/run.sh run
