@@ -97,3 +97,15 @@ test('concurrent drafts never share an id', async () => {
   assert.equal(readdirSync(dir).filter((f) => /^D\d+\.json$/.test(f)).length, 60);
   assert.equal(allocDraftId(dir), 'D61');
 });
+
+test('a reply to the owner\'s own sent mail goes to that mail\'s recipients, not back to the owner', async () => {
+  const { replyRecipients } = await import('./approval.mjs');
+  const r = (a) => ({ emailAddress: { address: a } });
+  const sent = { from: r('Sam@example.test'), toRecipients: [r('kim@example.test')], ccRecipients: [r('lee@example.test')] };
+  assert.deepEqual(replyRecipients(sent, 'sam@example.test', {}), { toRecipients: [r('kim@example.test')], ccRecipients: [r('lee@example.test')] });
+  assert.deepEqual(replyRecipients(sent, 'sam@example.test', { cc: ['pat@example.test'] }), { toRecipients: [r('kim@example.test')] });
+  assert.deepEqual(replyRecipients(sent, 'sam@example.test', { to: ['pat@example.test'] }), {});
+  assert.deepEqual(replyRecipients({ ...sent, from: r('kim@example.test') }, 'sam@example.test', {}), {});
+  assert.deepEqual(replyRecipients({ from: r('sam@example.test'), toRecipients: [] }, 'sam@example.test', {}), {});
+  assert.deepEqual(replyRecipients(null, 'sam@example.test', {}), {});
+});

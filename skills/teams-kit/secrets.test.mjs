@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { envSecrets, findSecrets } from './secrets.mjs';
+import { envSecrets, findSecrets, redactCodes, cloudflareTunnelToken } from './secrets.mjs';
 
 const envFile = () => {
   const f = path.join(mkdtempSync(path.join(tmpdir(), 'sec-')), '.env');
@@ -40,4 +40,25 @@ test('ordinary replies pass: names, paths, numbers, the word token', () => {
   for (const t of ['Hi Sam Lee, nova here. The report is at /srv/nova/state/jobs/x.md.',
     'Build 4821 passed; 12 tests, 0 failures. https://example.test/pr/5',
     'The token cache refresh failed twice, so I raised a blocker.']) assert.deepEqual(findSecrets(t, { secrets }), [], t);
+});
+
+test('Cloudflare tunnel connector and API tokens are caught; links, hashes and ids are not', () => {
+  const secrets = [];
+  const tunnel = Buffer.from(JSON.stringify({ a: 'f'.repeat(32), t: '0a1b2c3d-0000-4000-8000-123456789abc', s: 'c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0' })).toString('base64');
+  assert.ok(cloudflareTunnelToken(`run --token ${tunnel}`));
+  assert.ok(findSecrets(`<p>cloudflared tunnel run --token ${tunnel}</p>`, { secrets }).includes('cloudflare-tunnel-token'));
+  assert.ok(findSecrets('use Xk3dP9qLm2Vn8Rt4Ws6Yb1Zc5Hf7Jg0Ku-Ae_Oi9 for the zone', { secrets }).includes('cloudflare-api-token'));
+  for (const t of ['commit 3f2a9c1d4e5b6a7f8091a2b3c4d5e6f708192a3b is merged',
+    'see https://example.sharepoint.com/:w:/g/personal/x/Xk3dP9qLm2Vn8Rt4Ws6Yb1Zc5Hf7Jg0Ku-Ae_Oi9?e=abc',
+    'chat 19:0123456789abcdef0123456789abcdef@thread.v2 and job 2026-1023-120000-build',
+    Buffer.from(JSON.stringify({ name: 'x', value: 'not a tunnel token at all' })).toString('base64')]) {
+    assert.deepEqual(findSecrets(t, { secrets }), [], t);
+  }
+});
+
+test('redactCodes masks one-time codes, not dates, times, versions or long numbers', () => {
+  assert.equal(redactCodes('Your code is 482913.'), 'Your code is [code].');
+  assert.equal(redactCodes('code 482 913 or 482-913'), 'code [code] or [code]');
+  for (const t of ['2026-10-23 12:30:45', 'v1.234567', 'build 12345678', 'id abc123456', 'call 98765 43210']) assert.equal(redactCodes(t), t, t);
+  assert.equal(redactCodes(undefined), '');
 });

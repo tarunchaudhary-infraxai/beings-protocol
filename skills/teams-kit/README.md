@@ -126,6 +126,8 @@ teams-fetch-attachment.mjs <attachments[].url from the message> [--out <dir>]
     exit 3 NOT_SHARED (ask the sender to share it with the Being) | 2 not a Microsoft attachment URL, refused | 1 error.
 teams-read.mjs --whoami | --list [--top N] | --find <text> | <upn> [--top N]
 teams-read.mjs --chat <chatId> [--top N] | --since <messageId> (exit 2 if not found) | --members
+    Text keeps the sender's line breaks and lists; reactions show who and when; [file] cards and [image] URLs are listed
+    (fetch them with teams-fetch-attachment.mjs). --since prints how many messages came after the anchor (stderr).
     --as <upn>   read as another identity present in BEING_CACHE (used by owner-read)
 teams-send-dm.mjs [<upn>] < msg            1:1 with that person (default OWNER_UPN), created if missing
     Every sender here posts only as the Being: the owner's UPN, cache or object id (kit .env on disk) exits 3.
@@ -133,6 +135,15 @@ teams-send-dm.mjs --chat <chatId> < msg
     --reply-to <messageId>  quote it (with --chat defaults to BEING_REPLY_TO) | --no-quote
     --attach-url <url> [--attach-name <n>]  file card for a OneDrive/SharePoint item
     --verbatim  skip the voice pass | --whoami  verify the sender token
+    --image <png|jpg|gif>  inline image (hostedContents, up to 4 MB, secret-scanned)
+    --group <upn,upn,...> --topic <t>  create a group chat (full scope only); posts stdin into it if not empty
+    --pin  pin the sent message in its chat | --redact-code  one-time codes masked in the comms log
+    --image, --pin, --group and --redact-code send directly (no voice-pass queue).
+    BEING_DOCS_INDEX=1: a document link or file card sent to the owner's 1:1 is added to the pinned docs index.
+teams-send-dm.mjs --as <upn> --draft <Dn>     (off unless BEING_ALLOW_SEND_AS=1; called by approve.mjs)
+    Sends an owner-approved send-as draft from that account's own cache (state/send-as/<upn>.json, signed in with
+    teams-login-device.mjs). The account must be in BEING_SEND_AS_UPNS and not the owner; the approval is used once,
+    within 10 minutes. state/send-as.stop pauses it.
     Scope comes from the grant named by BEING_SEND_TOKEN (scope.mjs): full | owner-only | chats:<id>,<id>.
     No grant = owner-only; a bad or expired one = none (refused). Blocked target, a prompt fingerprint or secret-looking text: exit 3, nothing sent.
     With BEING_VOICE=fast the message is queued in $BEING_STATE_DIR/outbox and sent after the voice pass.
@@ -149,17 +160,48 @@ fast-warm.mjs serve | ask <lane> <timeoutMs> <system-prompt file> < turn | prewa
     BEING_FAST_WARM_TURNS (30 per process), BEING_FAST_WARM_IDLE_MIN (teammate lanes, 120; owner 6 h).
 teams-presence.mjs available | offline | status
     available lasts 15 min; the runner refreshes it every ~5 min, so Teams drops to Offline when it stops.
-teams-login-device.mjs --upn <user@your-tenant> --cache <file> [--scopes a,b,c]
+teams-login-device.mjs --upn <user@your-tenant> --cache <file> [--scopes a,b,c] [--add-scopes a,b]
+    --add-scopes adds optional ones to the default list: User.ReadWrite (set-photo.mjs), ChannelMessage.Send,
+    Team.ReadBasic.All, Channel.ReadBasic.All, TeamMember.Read.All, ChannelMember.Read.All (teams-channel.mjs),
+    Mail.Read.Shared (mail.mjs --mailbox).
     The owner's UPN or cache is refused unless BEING_OWNER_DELEGATE=1 in .env (then a warning is printed).
 mail.mjs --list [--top N] [--unread] | --search <text> [--top N] | --read <id> | --attachments <id> [--save <dir>]
 mail.mjs --detect <ISO8601-watermark>      exit 0 none, 10 new (JSON on stdout), 1 error
-mail.mjs --send --to a[,b] --subject S [--cc c] [--attach f1,f2] [--inline f=cid] < body.html   (files < 3 MB, inline < 1 MB)
-    Attachment bytes go through the same secret scan as the subject and body.
+mail.mjs --send --to a[,b] --subject S [--cc c] [--attach f1,f2] [--inline f=cid] < body.html   (files < 150 MB, inline < 1 MB)
+    Attachment bytes go through the same secret scan as the subject and body. Files of 3 MB and over are uploaded to a
+    draft in chunks (upload session), then the draft is sent; a failed upload deletes the draft.
+mail.mjs --mailbox <shared@your-tenant> --list | --search <t> | --read <id> | --attachments <id> [--save dir]
+    Read-only view of a shared mailbox the sign-in has delegate access to (Mail.Read.Shared, via --add-scopes).
+    Owner-lane grants only; the mailbox must be listed in BEING_SHARED_MAILBOXES (empty = off).
 draft-for-owner.mjs --chat <owner chatId> [--re "<their message>"] < draft.md     target label resolved from Graph
     Refused: a draft for the owner's 1:1 with the Being, or text that is itself a "send Dn" command.
+draft-for-owner.mjs --chat <chatId> --as <upn> < draft.md     a draft sent from another account that granted it
+    (BEING_ALLOW_SEND_AS=1); the prompt names the account, and "send Dn" sends it through teams-send-dm.mjs --as.
 draft-for-owner.mjs --mail --to a[,b] [--cc c] --subject S [--reply-to <owner messageId>] [--attach /abs/f] < draft.md
+    A reply to the owner's own sent mail goes to that mail's recipients (unless --to is given), in its thread; --subject
+    retitles the reply.
 approve.mjs send|edit|skip|save <Dn> --chat <owner 1:1 chatId> --msg <owner's command messageId>
     Called by being-handle for commands the owner typed; re-reads the command and prompt from Graph (GUARDRAILS.md).
+teams-channel.mjs list | post --team <id> --channel <id> [--subject S] [--attach-url U [--attach-name N]] [--dry-run] < body
+    list: teams and channels the Being is in, with its role. post: off unless BEING_CHANNEL_POST=1, full-scope grant only;
+    same secret and approval-prompt filters as chats. --dry-run renders offline.
+teams-delete-msg.mjs <chatId> <messageId>...   soft-delete messages the Being sent (others' are refused, exit 1)
+set-photo.mjs <image.png|jpg>                  the Being's own profile photo (User.ReadWrite); owner lane only
+share-file.mjs <file> --to a,b [--topic T | --folder P] [--edit] [--folder-link]
+    Uploads to the Being's OneDrive under $BEING_SHARE_ROOT/<topic> (default Shared/General), grants sign-in access (read,
+    or edit with --edit; the owner always gets edit) and prints the webUrl for --attach-url. Scoped runs may share only
+    with the owner and the members of their chats. Never an "anyone" link.
+onedrive.mjs tree|perms|url|links <path> | get <path> <file> | mkdir <parent> <name> | move <path> <dest> [name]
+onedrive.mjs upload <file> <remote> | delete <path> | invite <path> <emails> [read|write] | revoke <path> <email>
+onedrive.mjs links <path> --strip-anonymous      owner lane only (full or owner-only grant)
+link-guard.mjs sweep [--path <folder>] [--strip]
+    Finds "anyone with the link" shares on the Being's OneDrive (exit 10 if found and not stripped). For a timer, the runner
+    can import { sweep } from link-guard.mjs, or run `link-guard.mjs sweep --strip` (e.g. hourly).
+docs-index-cli.mjs post <seed.json> | refresh | verify     (optional, BEING_DOCS_INDEX=1)
+    One pinned "Docs index" message in the owner's 1:1; entries past BEING_DOCS_INDEX_MAX (60) or the size cap move to
+    state/docs-index-archive.jsonl.
+workbook-sync.mjs <remote.xlsx> <sheets.json>   write {"Sheet": [[...], ...]} into a workbook on the Being's OneDrive
+    (Excel API, works while it is open; cells as text, stale rows cleared). Owner lane only.
 scope.mjs mint <full|owner-only|chats:id,...> [ttlHours] | revoke < token | show | owner-read-ok | prune
     mint is the handler's: it needs state/handler.key (0600). Grants without its HMAC are refused (none). In the two-user
     layout only the kit user can read the key; on a same-user host any run can, so mint cannot be restricted (doctor fails).

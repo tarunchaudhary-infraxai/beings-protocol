@@ -14,6 +14,23 @@ const PATTERNS = [
   ['env-line', /^\s*(?:export\s+)?(?:BEING|OWNER|M365)_[A-Z0-9_]+=/m],
   ['credential-assignment', /\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)\s*[:=]\s*\S{6,}/i],
 ];
+// Cloudflare API tokens: a lone run of 40 url-safe characters mixing cases and digits, outside links (share ids).
+const CF_API = /(?<![\w-])(?=[\w-]*[A-Z])(?=[\w-]*[a-z])(?=[\w-]*\d)[\w-]{40}(?![\w-])/;
+const LINKS = /\b(?:https?:\/\/|www\.)[^\s"'<>]+|\bhref=["'][^"']*["']/gi;
+// Tunnel connector tokens: base64 JSON carrying the a (account), t (tunnel) and s (secret) keys.
+const B64_JSON = /(?<![\w+/-])eyJ[A-Za-z0-9+/_-]{30,}={0,2}/g;
+export function cloudflareTunnelToken(text) {
+  for (const m of String(text || '').matchAll(B64_JSON)) {
+    try {
+      const j = JSON.parse(Buffer.from(m[0].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+      if (j && typeof j === 'object' && 'a' in j && 't' in j && 's' in j) return true;
+    } catch {}
+  }
+  return false;
+}
+
+// One-time codes (123456, 123 456, 123-456) masked before text reaches a log.
+export const redactCodes = (s) => String(s ?? '').replace(/(?<![\w.:/-])\d{3}[ -]?\d{3}(?![\w-]|[.:/]\d)/g, '[code]');
 
 // .env values worth protecting: tenant/app/object ids and anything named like a secret. Names, UPNs, paths pass.
 export function envSecrets(file = path.join(KIT, '.env'), env = process.env) {
@@ -44,5 +61,7 @@ export function findSecrets(text, { secrets = envSecrets() } = {}) {
   const hits = [];
   for (const [k, v] of secrets) if (t.includes(v) || plain.includes(v)) hits.push(k);
   for (const [name, re] of PATTERNS) if (re.test(t) || re.test(plain)) hits.push(name);
+  if (cloudflareTunnelToken(t) || cloudflareTunnelToken(plain)) hits.push('cloudflare-tunnel-token');
+  if (CF_API.test(t.replace(LINKS, ' ')) || CF_API.test(plain.replace(LINKS, ' '))) hits.push('cloudflare-api-token');
   return [...new Set(hits)];
 }

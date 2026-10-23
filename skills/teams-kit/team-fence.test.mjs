@@ -288,3 +288,46 @@ test('in a Bash command the personal-note rule reads past .md and quotes to the 
   assert.ok(blocked('Bash', { command: 'cd .beings/./memory-graph/; cat "a.md" \'family.md\'' }));
   assert.ok(!blocked('Bash', { command: 'cat .beings/memory-graph/a.md' }));
 });
+
+test('session dumps, kit logs, the send-as caches, owner-access tools and Cloudflare tokens are refused', (t) => {
+  const blocked = fence(t);
+  assert.ok(blocked('Read', { file_path: '.beings/sessions/2026-10-12-owner.jsonl' }));
+  assert.ok(blocked('Bash', { command: 'ls .beings/sessions' }));
+  for (const f of ['state/codex.log', 'state/inbox.jsonl', 'state/send-as/kim@example.test.json'])
+    assert.ok(blocked('Bash', { command: `tail -5 ${f}` }), f);
+  for (const c of ['owner-web search budget', 'node owner-channel-posts.mjs', 'ls state/owner-browser/Default', 'owner-forward --list'])
+    assert.ok(blocked('Bash', { command: c }), c);
+  for (const f of ['~/.cloudflared/cert.pem', '/srv/tokens/cloudflare-tunnel.env', '/opt/org/cf-tokens/zone.txt', 'deploy/secrets.env'])
+    assert.ok(blocked('Read', { file_path: f }), f);
+  assert.ok(blocked('Bash', { command: 'cat /etc/org/cloudflare.env' }));
+  assert.equal(blocked('Read', { file_path: 'docs/cloudflare-setup.md' }), false);
+  assert.equal(blocked('Bash', { command: 'git diff --stat' }), false);
+});
+
+test('another lane\'s job directory and a listing of every job are refused; this lane\'s own job is not', (t) => {
+  const blocked = fence(t);
+  assert.ok(blocked('Bash', { command: 'ls skills/teams-kit/state/jobs/' }));
+  assert.ok(blocked('Bash', { command: 'ls state/jobs' }));
+  assert.ok(blocked('Bash', { command: 'ls state/jobs/1014-010101-other/' }));
+  assert.ok(blocked('Read', { file_path: 'state/jobs/1014-010101-other' }));
+});
+
+test('BEING_OWNER_BROWSER_DIR names the owner\'s browser profile; it is refused wherever it lives', (t) => {
+  const ws = mkdtempSync(path.join(tmpdir(), 'fence-'));
+  t.after(() => rmSync(ws, { recursive: true, force: true }));
+  const run = (input) => spawnSync('python3', [path.join(KIT, 'team-fence.py')], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: input }, cwd: ws }),
+    env: { ...process.env, BEING_WORKSPACE: ws, BEING_LANE: 'team:19:x', BEING_FENCE_DENY: '', BEING_OWNER_BROWSER_DIR: '/srv/profiles/sam-edge' }, encoding: 'utf8' }).status;
+  assert.equal(run('ls /srv/profiles/sam-edge/Default'), 2);
+  assert.equal(run('ls /srv/profiles/other'), 0);
+});
+
+test('this lane\'s own job files and job directory stay readable', (t) => {
+  const ws = mkdtempSync(path.join(tmpdir(), 'fence-'));
+  t.after(() => rmSync(ws, { recursive: true, force: true }));
+  mkdirSync(path.join(ws, 'state', 'job-scopes'), { recursive: true });
+  writeFileSync(path.join(ws, 'state', 'job-scopes', '1014-010101-mine.json'), JSON.stringify({ scope: 'chats:19:x' }));
+  const run = (command) => spawnSync('python3', [path.join(KIT, 'team-fence.py')], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: ws }),
+    env: { ...process.env, BEING_WORKSPACE: ws, BEING_STATE_DIR: path.join(ws, 'state'), BEING_LANE: 'team:19:x', BEING_FENCE_DENY: '' }, encoding: 'utf8' }).status;
+  assert.equal(run('cat state/jobs/1014-010101-mine.result.md'), 0);
+  assert.equal(run('ls state/jobs/1014-010101-mine/'), 0);
+});

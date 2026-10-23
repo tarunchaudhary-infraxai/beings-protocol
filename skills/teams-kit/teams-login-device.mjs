@@ -9,7 +9,7 @@ import { kitEnv, ownerMatch } from './kit-env.mjs';
 const a = process.argv.slice(2);
 const opt = (n) => { const i = a.indexOf(n); return i === -1 ? null : a[i + 1]; };
 const UPN = (opt('--upn') || '').toLowerCase(), CACHE = opt('--cache');
-if (!UPN || !CACHE) fail('usage: teams-login-device.mjs --upn <user@your-tenant> --cache <file> [--scopes a,b,c]', 2);
+if (!UPN || !CACHE) fail('usage: teams-login-device.mjs --upn <user@your-tenant> --cache <file> [--scopes a,b,c] [--add-scopes a,b]', 2);
 const DEFAULT_SCOPES = ['Chat.ReadWrite', 'ChatMessage.Send', 'Chat.Create', 'User.Read', 'Files.ReadWrite',
   'Presence.ReadWrite', 'Mail.ReadWrite', 'Mail.Send'];
 // --scopes narrows the grant, e.g. a read-mostly delegate sign-in for the owner.
@@ -23,7 +23,10 @@ if (ownerMatch({ upn: UPN, cache: CACHE }, kenv)) {
 !! ${sameUser ? 'The model runs as this OS user: a prompt-injected run can read this token. Use it only on a\n!! two-user host (GUARDRAILS.md "Threat model"); being-teams doctor will fail until then.' : `Keep ${CACHE} unreadable to ${kenv.BEING_MODEL_USER}; run being-teams doctor after sign-in.`}
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n`);
 }
-const SCOPES = opt('--scopes') ? opt('--scopes').split(',').map((x) => x.trim()).filter(Boolean) : DEFAULT_SCOPES;
+// --add-scopes extends the list with optional ones, e.g. User.ReadWrite (set-photo.mjs), ChannelMessage.Send
+// (teams-channel.mjs) or Mail.Read.Shared (mail.mjs --mailbox).
+const list = (s) => (s || '').split(',').map((x) => x.trim()).filter(Boolean);
+const SCOPES = [...new Set([...(opt('--scopes') ? list(opt('--scopes')) : DEFAULT_SCOPES), ...list(opt('--add-scopes'))])];
 
 // Sign in into a temp cache and swap it in only on the right account: a wrong-account sign-in must never
 // destroy the working identity.

@@ -18,6 +18,8 @@ PERSONAL = "|".join(re.escape(w.lower()) for w in [(os.environ.get("OWNER_NAME")
                     os.environ.get("BEING_FENCE_PERSONAL_WORDS", "").split(",") if w.strip()) or "(?!)"
 PERSONAL = PERSONAL + "|personal|family|health|journey|salary|appraisal"
 OWNER_FILES = r"\b(?:MEMORY|USER|DECISIONS|AUTONOMY|GOALS|ORG)\.md\b"
+# The owner's browser profile (owner-access web sign-in): BEING_OWNER_BROWSER_DIR, plus the default folder names.
+BROWSER = [re.escape(p.rstrip("/")) for p in [os.environ.get("BEING_OWNER_BROWSER_DIR", "")] if p.strip()]
 DENY = [
     (re.escape(PRIV.rstrip("/")), "private owner files"),
     (OWNER_FILES, "the owner's memory and decisions"),
@@ -25,17 +27,22 @@ DENY = [
     (r"\b(?:bond_us|personal_moments|personal_journey[\w-]*)\b", "the owner's personal notes"),
     (r"(?:" + H + r"/|\b)hive/(?:spool|tokens|minds|audit|deliver|locks)", "the hive (other minds' mail)"),
     (r"\bconversations/[\w.@-]+\.jsonl\b", "other conversations"),
+    (B + r"sessions(?=/|[\s\"'\\]|$)", "session dumps"),
+    (r"\bstate/jobs/?(?=[\s\"'\\*]|$)", "other conversations' jobs"),   # listing every job; one job's files: lane check below
     (r"\bjob-scopes\b", "kit state"),
-    (H + r"/\.(?:config|ssh|aws|azure|kube|gnupg|docker|netrc|git-credentials|password-store)\b", "credentials"),
+    (H + r"/\.(?:config|ssh|aws|azure|kube|gnupg|docker|netrc|git-credentials|password-store|cloudflared)\b", "credentials"),
+    (r"(?:\.cloudflared\b|\b(?:cloudflare|cf)[-_]?(?:tokens?|creds?|credentials|secrets?)\b)", "Cloudflare tokens"),
+    (r"(?<![\w.-])[\w-]*(?:cloudflare|tunnel|secrets?|creds?|credentials|tokens?)[\w-]*\.env(?![\w-])", "credentials"),
     (H + r"/\.claude(?:/projects|\.json)", "other sessions and auto memory"),
     (H + r"/\.codex/(?:sessions|archived_sessions|session_index|auth|history)", "other sessions"),
     # Sourcing the kit .env to send is fine; reading or copying any .env is not.
     (r"\b(?:cat|head|tail|less|more|grep|rg|sed|awk|strings|base64|xxd|od|cp|mv|scp|curl|python3?|node|env)\b[^|;&\n]*" + ENV_FILE, "credentials"),
     (r"teams-kit/state/(?!jobs/)", "kit state"),
-    (r"\b(?:comms\.jsonl|owner-inbox|owner-watermark|token-cache[\w-]*|handler\.key|grants/|handler\.log)\b", "kit state"),
+    (r"\b(?:comms\.jsonl|owner-inbox|owner-watermark|token-cache[\w-]*|handler\.key|grants/|handler\.log|codex\.log|inbox\.jsonl|send-as/)", "kit state"),
     (r"\b(?:owner-read|owner-mail|draft-for-owner|approve\.mjs|scope\.mjs)\b", "owner tools"),
+    (r"\bowner-(?:web|browser|access|channel[\w-]*|forward[\w-]*)\b", "owner tools"),
     (r"/proc/[\w$]+/environ", "process environment"),
-] + [(p.strip(), "private (BEING_FENCE_DENY)") for p in EXTRA]
+] + [(p, "the owner's browser profile") for p in BROWSER] + [(p.strip(), "private (BEING_FENCE_DENY)") for p in EXTRA]
 # memory-graph is shared work knowledge (designs of the Being's own systems included), except notes about the owner as a
 # person; a note's frontmatter decides first (share: team / share: private, see shared_note()).
 GRAPH, NAMED = re.compile(B + r"memory-graph/", re.I), re.compile(PERSONAL, re.I)
@@ -49,7 +56,7 @@ def personal_note(blob, stops=True):
         if NAMED.search(blob, s, m.start() if m else e): return True
     return False
 
-JOB = re.compile(r"jobs/([0-9]{4}-[0-9]{6}-[\w-]+?)(?:\.result\.md|\.events\.jsonl|\.exec\.log|\.log|\.json)\b")
+JOB = re.compile(r"jobs/([0-9]{4}-[0-9]{6}-[\w-]+?)(?:\.result\.md|\.events\.jsonl|\.exec\.log|\.log|\.json\b|/|(?=[\s\"'\\*]|$))")
 
 def lane_of(job_id):
     state = os.environ.get("BEING_STATE_DIR") or os.path.join(KIT, "state")
