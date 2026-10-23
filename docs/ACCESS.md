@@ -102,6 +102,10 @@ owner_files = true           # example of an owner row the owner ticked
 # every key not listed, or not true, is off
 ```
 
+Shared mailbox and channel rows have two routes: `graph` (the owner's API session; needs consent to the shared-mailbox
+or channel scopes) and `browser` (the owner's own Outlook web or Teams web session, for tenants where an admin has not
+consented to those scopes). Set `route` in `owner-access.toml`; the guards and approvals are the same on both.
+
 `shared_mailbox_drafts` covers two switches in `owner-access.toml`: `shared_mailbox_drafts` (drafts) and
 `shared_mailbox_send` (the reviewed batch send); the owner can tick drafts and leave sending off.
 

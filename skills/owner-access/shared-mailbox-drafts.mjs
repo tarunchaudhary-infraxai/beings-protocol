@@ -7,7 +7,10 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { fail } from './graph.mjs';
 import { openOwnerAccess, preflight, requireGo, logAsOwner, reportToOwner, esc } from './owner-session.mjs';
-import { draftsRoute, guardedGraph } from './guards.mjs';
+import { draftsRoute, guardedGraph, browserRequestAllowed, OUTLOOK_API } from './guards.mjs';
+import { loadConfig } from './oa-config.mjs';
+import { routeFor } from './browser-route.mjs';
+import { outlookFromBrowser } from './owner-browser.mjs';
 import { normalizeDraft, draftKey, rcpts, validateManifest, preflightProblems, matchOwn } from './mailbox-lib.mjs';
 import { planOf, withLedger, fingerprint } from './ledger.mjs';
 
@@ -23,7 +26,9 @@ const SEND = cmd === 'send';
 const ability = SEND ? 'shared_mailbox_send' : 'shared_mailbox_drafts';
 const really = (cmd === 'create' && o.create) || (cmd === 'update' && o.update) || SEND;
 
-const s0 = preflight(ability, { services: ['outlook'] });
+// route "graph" (owner API session) or "browser" (owner's Outlook web session), from owner-access.toml.
+const ROUTE = (() => { try { return routeFor(loadConfig(), ability); } catch (e) { return fail(e.message, 2); } })();
+const s0 = preflight(ability, { services: [ROUTE === 'browser' ? 'browser' : 'outlook'] });
 const box = s0.cfg.shared_mailbox || {};
 const MAILBOX = String(box.address || '').toLowerCase();
 if (!MAILBOX) fail('set [shared_mailbox] address in owner-access.toml', 2);
@@ -58,9 +63,18 @@ if (cmd === 'create' && !really) {
 }
 
 const scopes = SEND ? ['Mail.ReadWrite.Shared', 'Mail.Send.Shared'] : ['Mail.ReadWrite.Shared'];
-const { s, owner } = await openOwnerAccess(ability, { services: ['outlook'], ownerScopes: { outlook: scopes } });
 const access = { own: new Set(own().map((d) => d.id)), sendIds: new Set(), sentItems: false };
-const g = guardedGraph(owner.outlook.token, (url, method) => draftsRoute(MAILBOX, url, method, access));
+let s = s0, g;
+if (ROUTE === 'graph') {
+  const { s: s1, owner } = await openOwnerAccess(ability, { services: ['outlook'], ownerScopes: { outlook: scopes } });
+  s = s1;
+  g = guardedGraph(owner.outlook.token, (url, method) => draftsRoute(MAILBOX, url, method, access));
+} else {
+  try {
+    g = await outlookFromBrowser(s, { mailbox: MAILBOX, scope: 'Mail.ReadWrite.Shared', browserGuard: browserRequestAllowed,
+      allow: (url, method) => draftsRoute(MAILBOX, url, method, { ...access, base: OUTLOOK_API }) });
+  } catch (e) { fail(`browser route: ${e.message}`, 6); }
+}
 const H = { Prefer: 'IdType="ImmutableId"' };
 const ROOT = `/users/${encodeURIComponent(MAILBOX)}`;
 const folder = await g(`${ROOT}/mailFolders/drafts?$select=id`, { headers: H });
@@ -70,15 +84,17 @@ const readDraft = async (id) => {
   const atts = m ? (await g(`${ROOT}/messages/${encodeURIComponent(id)}/attachments?$select=name,size,isInline`, { headers: H })).value : [];
   return { m, atts };
 };
-const listAll = async (url) => { const out = []; while (url) { const p = await g(url, { headers: H }); out.push(...(p.value || [])); url = p['@odata.nextLink']; } return out; };
+// $skip pages on both routes: Outlook REST paging links spell the mailbox differently and would miss the allowlist.
+const listAll = async (url, max = 20) => {
+  const out = [];
+  for (let n = 0; n < max; n++) { const p = await g(`${url}&$top=100&$skip=${n * 100}`, { headers: H }); out.push(...(p.value || [])); if ((p.value || []).length < 100) break; }
+  return out;
+};
 const sentKeys = async () => {
   access.sentItems = true;
   const seen = new Map();
-  let url = `${ROOT}/mailFolders/sentitems/messages?$select=subject,toRecipients,ccRecipients,sentDateTime&$orderby=sentDateTime desc&$top=100`;
-  for (let n = 0; url && n < 5; n++) {
-    const p = await g(url, { headers: H });
-    for (const m of p.value || []) { const k = draftKey(m.subject || '', rcpts(m.toRecipients)); seen.set(k, [...(seen.get(k) || []), rcpts(m.ccRecipients)]); }
-    url = p['@odata.nextLink'];
+  for (const m of await listAll(`${ROOT}/mailFolders/sentitems/messages?$select=subject,toRecipients,ccRecipients,sentDateTime&$orderby=sentDateTime desc`, 5)) {
+    const k = draftKey(m.subject || '', rcpts(m.toRecipients)); seen.set(k, [...(seen.get(k) || []), rcpts(m.ccRecipients)]);
   }
   access.sentItems = false;
   return seen;
@@ -87,7 +103,7 @@ const sentKeys = async () => {
 try {
   if (cmd === 'create') {
     const rows = loadInput(), a = attachment();
-    const existing = new Set((await listAll(`${ROOT}/mailFolders/drafts/messages?$select=subject,toRecipients&$top=100`)).map((m) => draftKey(m.subject || '', rcpts(m.toRecipients))));
+    const existing = new Set((await listAll(`${ROOT}/mailFolders/drafts/messages?$select=subject,toRecipients`)).map((m) => draftKey(m.subject || '', rcpts(m.toRecipients))));
     let made = 0;
     for (const r of rows) {
       const k = draftKey(r.subject, r.to);

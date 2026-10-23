@@ -33,9 +33,9 @@ All live under `[abilities]` in `owner-access.toml`, and `[owner_access] enabled
 | `shared_mailbox_read` | `shared-inbox-monitor.mjs`, `shared-inbox-monitor.sh` | List new mail in a shared mailbox; a job classifies it and tells the team | Outlook |
 | `owner_teams_send_approved` | `draft-for-owner.mjs` + `approve.mjs` (Teams kit) | Teams reply as the owner after the owner types `send Dn` | Teams |
 | `owner_mail_send_approved` | same | Mail as the owner after `send Dn` | Outlook |
-| `shared_mailbox_drafts` | `shared-mailbox-drafts.mjs create / update / plan / preflight` | Create unsent drafts; edit only drafts the Being created | Outlook |
-| `shared_mailbox_send` | `shared-mailbox-drafts.mjs send` | Send a named, reviewed batch of those drafts after a go | Outlook (+ Being's Teams to read the go) |
-| `channel_posts` | `channel-posts.mjs preview / apply` | Upload files and post a reviewed batch in one allowed channel after a go | Teams |
+| `shared_mailbox_drafts` | `shared-mailbox-drafts.mjs create / update / plan / preflight` | Create unsent drafts; edit only drafts the Being created | Outlook (browser with `route = "browser"`) |
+| `shared_mailbox_send` | `shared-mailbox-drafts.mjs send` | Send a named, reviewed batch of those drafts after a go | Outlook or browser (+ Being's Teams to read the go) |
+| `channel_posts` | `channel-posts.mjs preview / apply` | Upload files and post a reviewed batch in one allowed channel after a go | Teams (browser with `route = "browser"`) |
 | `mail_forward_rules` | `mail-forward-rules.mjs` | Forward mail a rule covers to the one allowed person who asked | Outlook (+ Being's Teams to read asks) |
 | `area_approvers` | `[approvers]` | Named people may give the go for their area | — |
 
@@ -115,6 +115,30 @@ draft, in Drafts, from the mailbox, same subject/To, CC present, attachment), an
 apart, with a ledger line after each, stopping at the first error. A rerun skips sent ids; an unconfirmed send is checked
 against Sent Items, never repeated. At the end every row is looked up in Sent Items.
 
+### Graph or browser route
+
+`[shared_mailbox] route` and `[channel_posts] route` pick how the owner's account is reached; `[routes] <ability>`
+overrides it per ability (`shared_mailbox_drafts`, `shared_mailbox_send`, `channel_posts`). Default `"graph"`.
+
+| Route | Uses | When |
+|---|---|---|
+| `graph` | The owner's API session (`OWNER_CACHE`) | The tenant lets the owner consent to `Mail.ReadWrite.Shared` / `Mail.Send.Shared` / `ChannelMessage.Send` / `Files.ReadWrite.All` |
+| `browser` | The owner's browser profile (`state/owner-browser/`, or `OWNER_BROWSER_PROFILE`) | An admin has not consented to those scopes for the app, but the owner can do the same thing in Outlook web or Teams web |
+
+Everything else is the same on both routes: owner lane only, the switch and pause file, the same go, fingerprint and
+ledger, and a request allowlist. The browser route needs **both** browser sessions signed in (`being login being
+--browser`, `being login owner --browser`) instead of the API ones.
+
+- **Shared mailbox, browser:** opens Outlook web on the mailbox's Drafts view (so nothing is marked read), takes the web
+  app's own token for `Mail.ReadWrite.Shared`, closes the page, checks `/me` is the owner, then makes the same calls
+  against the Outlook REST API through the same allowlist (no delete, move, reply or other mailbox; send only for the
+  approved ids). The owner must have opened the shared mailbox in Outlook web at least once.
+- **Channel posts, browser:** files go to the channel's SharePoint folder with the owner's cookies (upload without
+  overwrite, read back and verify, never delete; only the folder listed in `[channel_posts] browser_folders` and named in
+  the manifest as `browser_folder`). Each post is typed into the Teams web composer (subject + text + one link per file)
+  and posted; the page may post only into that channel and never deletes or edits. Posts carry links, not attachment
+  cards. The browser who-am-I (SharePoint `currentuser`) runs before anything else.
+
 ## Shared inbox monitor
 
 `shared-inbox-monitor.mjs scan --since <iso> --out f.json` lists `[shared_mailbox] folders` (default Inbox and Junk) read
@@ -131,7 +155,7 @@ channel-posts.mjs preview --manifest m.json [--out dir]        local HTML previe
 channel-posts.mjs apply --manifest m.json --go-chat <id> --go-msg <id>
 ```
 
-Manifest: `{ batch, team, channel, folder?, created, posts: [{ title, body_html | body_text, files: [/abs/path] }] }`. The
+Manifest: `{ batch, team, channel, folder?, created, browser_folder?, posts: [{ title, body_html | body_text, files: [/abs/path] }] }`. The
 `team/channel` pair must be in `[channel_posts] allowed`. `apply` uploads each file into the channel's files folder under
 `<folder>/` (never overwriting), downloads it back and compares bytes; for Office files that SharePoint changes on upload,
 `verify-upload.py` checks the package is the same apart from metadata. Then each post goes out with its files attached, one
@@ -176,6 +200,7 @@ off, another mailbox or channel, or a sign-in.
 | `guards.mjs` | Route allowlists for every tool |
 | `ledger.mjs`, `go-approval.mjs` | Batch fingerprints and ledgers; go checks |
 | `mailbox-lib.mjs`, `channel-lib.mjs`, `forward-rules.mjs` | Pure helpers (unit-tested) |
+| `browser-route.mjs`, `owner-browser.mjs` | Route choice and the browser route (Outlook web token, SharePoint, Teams web) |
 | `owner-web(.mjs)`, `shared-mailbox-drafts.mjs`, `shared-inbox-monitor.mjs/.sh`, `channel-posts.mjs`, `mail-forward-rules.mjs` | The tools |
 | `owner-access-login`, `owner-access-run`, `owner-access-doctor.mjs` | Sign-ins, scheduled runs, checks |
 | `verify-upload.py` | Office upload integrity check |
