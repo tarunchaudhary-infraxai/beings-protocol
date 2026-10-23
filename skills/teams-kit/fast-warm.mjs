@@ -124,7 +124,7 @@ async function serve() {
   const log = (m) => appendFileSync(LOG, `${ts()} ${m}\n`);
   if (await reachable(SOCK)) { console.error('fast-warm: already running'); process.exit(0); }
   try { unlinkSync(SOCK); } catch { /* none */ }
-  const cmd = process.env.BEING_FAST_WARM_CMD || 'claude';
+  const cmd = process.env.BEING_FAST_WARM_CMD || process.env.BEING_CLAUDE_BIN || 'claude';
   const env = { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: 'false', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
   const dflt = { model: process.env.BEING_FAST_MODEL || 'haiku', effort: process.env.BEING_FAST_EFFORT || '' };
   const errFd = openSync(path.join(STATE, 'fast.log'), 'a');

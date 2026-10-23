@@ -98,6 +98,10 @@ b=(--die-with-parent --unshare-pid --unshare-ipc --unshare-uts --new-session
 env=(BEING_BROKER_SOCK=/run/kit/broker.sock BEING_ISOLATION="$MODE" BEING_LANE="$lane" PATH=/run/kit-bin:/run/bin:/usr/local/bin:/usr/bin:/bin
      LANG="${LANG:-C.UTF-8}" TERM=dumb SHELL=/bin/bash)
 b+=(--ro-bind "$claude_pkg" /run/claude-code --symlink "/run/claude-code/${claude_bin#"$claude_pkg"/}" /run/bin/claude)
+# node runs the client, the shims and the relay; one installed outside /usr (nvm, ~/.local, /opt) is bound in by itself.
+node_bin=$(readlink -f "${BEING_NODE_BIN:-$(command -v node 2>/dev/null || true)}" 2>/dev/null || true)
+[[ -x $node_bin ]] || die "no node binary (BEING_NODE_BIN)"
+[[ $node_bin == /usr/* ]] || b+=(--ro-bind "$node_bin" /run/bin/node)
 for v in BEING_SESSION_NAME BEING_VOICE BEING_REPLY_TO BEING_NAME OWNER_NAME BEING_FENCE_PERSONAL_WORDS CLAUDE_CODE_DISABLE_AUTO_MEMORY CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC \
          ENABLE_CLAUDEAI_MCP_SERVERS; do [[ -n "${!v:-}" ]] && env+=("$v=${!v}"); done
 

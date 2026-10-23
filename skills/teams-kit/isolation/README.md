@@ -101,6 +101,9 @@ shared network (proxy on host 127.0.0.1); client-side web fetches need it, at th
 swaps in the kit user's current Claude login (read per request, so refreshes are picked up) and forwards to the API. If
 the login is about to expire and nothing refreshed it, one tool-less `claude -p` in an empty dir refreshes it.
 
+**node in the sandbox.** The sandbox sees `/usr` only. A `node` installed elsewhere (nvm, `~/.local`, `/opt`) is bound in
+read-only at `/run/bin/node`, on the run's PATH, for the client, the shims and the relay; `BEING_NODE_BIN` overrides it.
+
 **team-sync.** Lane layout under `<root>/<tag>/` (`<tag>` = sha1(chatId)[:10], as being-handle): `CLAUDE.md` (teammate
 boot file), `SOUL.md` (the public soul; absent → the run is refused), `conversation.jsonl` (this chat's last 400 lines),
 `WORK.md` (open team items this chat may see), `shared/` (workspace files with `share: team`), `work/` and `home/`
