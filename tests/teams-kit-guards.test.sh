@@ -31,6 +31,8 @@ chmod 600 "$KIT/.env"
 for c in claude codex; do
   cat >"$TMP/bin/$c" <<STUB
 #!/usr/bin/env bash
+# Lanes run in parallel: one call's record is written under a lock so records never interleave.
+exec 8>>"$TMP/$c.calls.lock"; flock 8
 { echo "== $c pwd=\$PWD scope=\$(BEING_SEND_TOKEN="\${BEING_SEND_TOKEN:-}" node "$KIT/scope.mjs" show 2>/dev/null)"; for a in "\$@"; do printf '[%s]\n' "\$a"; done; } >>"$TMP/$c.calls"
 for ((i=1; i<=\$#; i++)); do [[ "\${!i}" == -o ]] && { j=\$((i+1)); echo '{"actions":[],"summary":"ready"}' >"\${!j}"; }; done
 echo '{"actions":[],"summary":"ready"}'
@@ -41,6 +43,18 @@ export HOME="$TMP/home" PATH="$TMP/bin:$PATH"
 # shellcheck source=/dev/null
 envrun() { (set -a; . "$KIT/.env"; set +a; cd "$KIT"; "$@"); }
 OWNER_UPN=sam@example.test
+# Lane runners, and the triage a no-reply escalation wakes, start in the background (setsid): wait until nothing is
+# queued or dispatching and no triage or lane lock is held (bounded). Locks are probed only once every queue is empty.
+wait_lanes() {
+  local _ f busy
+  for _ in $(seq 1 150); do
+    busy=0
+    for f in "$ST/queue.jsonl" "$ST/work.jsonl" "$ST"/work.dispatch.* "$ST"/lanes/*.inbox.jsonl; do [[ -s $f ]] && busy=1; done
+    if (( !busy )); then for f in "$ST/triage.lock" "$ST"/lanes/*.lock; do [[ -e $f ]] && ! flock -n "$f" true && busy=1; done; fi
+    (( busy )) || return 0; sleep 0.2
+  done
+  echo "  (lane runners still busy after 30 s)"
+}
 
 # 1. Review reproduction: a run points the sender at the owner's cache and UPN and posts "send D7".
 expect_blocked() {   # $1 label, rest: command (stdin from $IN)
@@ -99,9 +113,7 @@ th=$(printf '%s' forged | sha256sum | cut -c1-64); printf '{"scope":"full","expi
 rm -f "$TMP/claude.calls"
 for m in "19:chatA|a1|kim" "19:chatB|b1|lee" "19:chatA|a2|kim"; do IFS='|' read -r c id who <<<"$m"
   printf '{"chatId":"%s","messageId":"%s","fromId":"%s","chatType":"oneOnOne","text":"hi from %s"}\n' "$c" "$id" "$who" "$who" >>"$ST/work.jsonl"; done
-"$KIT/being-handle" work
-# Lane runs start in the background: wait for both (bounded).
-for _ in $(seq 1 100); do [[ $(grep -c '^== claude' "$TMP/claude.calls" 2>/dev/null || true) -ge 2 ]] && break; sleep 0.2; done; sleep 0.5
+"$KIT/being-handle" work; wait_lanes
 runs=$(grep -c '^== claude' "$TMP/claude.calls" || true)
 scopes=$(grep '^== claude' "$TMP/claude.calls" | sed 's/.*scope=//' | sort | tr '\n' ' ')
 [[ $runs == 2 && "$scopes" == "chats:19:chatA chats:19:chatB " ]] && ok "one work run per teammate chat, scope = that chat" || bad "team runs=$runs scopes=[$scopes]"
@@ -113,9 +125,14 @@ for r in runs:
     if a and b: sys.exit(1)
 PY
 
-# 6. Fast client (triage/voice) gets no file tools and runs outside the workspace.
-rm -f "$TMP/claude.calls"; "$KIT/being-handle" warm
+# 6. Fast client (triage/voice) gets no file tools and runs outside the workspace. A Claude fast client is warmed through the
+# fast-warm daemon (being-teams keeps it running), so start it here as being-teams does.
+rm -f "$TMP/claude.calls"
+envrun node fast-warm.mjs serve </dev/null >/dev/null 2>&1 & wpid=$!
+for _ in $(seq 1 50); do [[ -S "$ST/fast-warm.sock" ]] && break; sleep 0.1; done
+"$KIT/being-handle" warm
 for _ in $(seq 1 50); do grep -q '^\[--tools\]$' "$TMP/claude.calls" 2>/dev/null && break; sleep 0.2; done
+[[ -s "$ST/fast-warm.pid" ]] && kill "$(cat "$ST/fast-warm.pid")" 2>/dev/null; wait "$wpid" 2>/dev/null || true
 grep -q '^\[--tools\]$' "$TMP/claude.calls" && grep -A1 '^\[--tools\]$' "$TMP/claude.calls" | grep -q '^\[\]$' && ! grep -q 'allowedTools' "$TMP/claude.calls" \
   && grep -q "pwd=$ST/fast-cwd" "$TMP/claude.calls" && ok "claude fast client: --tools \"\", empty cwd" || bad "claude fast client: $(head -c 300 "$TMP/claude.calls")"
 rm -rf "$ST/fast-daily"; sed -i.bak 's/^BEING_FAST_CLIENT=claude/BEING_FAST_CLIENT=codex/' "$KIT/.env"; rm -f "$KIT/.env.bak"
@@ -126,8 +143,12 @@ grep -q "pwd=$ST/fast-cwd" "$TMP/codex.calls" && grep -q "^\[$ST/fast-cwd\]$" "$
 job() { rm -f "$TMP/codex.calls"; envrun ./being-job codex "$@" >/dev/null
   for _ in $(seq 1 50); do grep -q 'network_access' "$TMP/codex.calls" 2>/dev/null && break; sleep 0.2; done; }
 job t1 --notify 19:x "task"; grep -q '^\[sandbox_workspace_write.network_access=false\]$' "$TMP/codex.calls" && ok "codex job: network off by default" || bad "codex job default network"
-job t2 --network --notify 19:x "task"; grep -q '^\[sandbox_workspace_write.network_access=true\]$' "$TMP/codex.calls" && ok "codex job: --network opts in" || bad "codex job --network"
-set +e; envrun ./being-job agent t3 --network --notify 19:x "task" >/dev/null 2>&1; rc=$?; set -e
+set +e; envrun ./being-job codex t2 --network --notify 19:x "task" >/dev/null 2>&1; rc=$?; set -e
+[[ $rc == 3 ]] && ok "codex job: --network refused without the full scope" || bad "--network without full scope: exit $rc"
+full=$(envrun node scope.mjs mint full 1)
+BEING_SEND_TOKEN="$full" job t3 --network --notify 19:x "task"
+grep -q '^\[sandbox_workspace_write.network_access=true\]$' "$TMP/codex.calls" && ok "codex job: --network opts in (full scope)" || bad "codex job --network"
+set +e; envrun ./being-job agent t4 --network --notify 19:x "task" >/dev/null 2>&1; rc=$?; set -e
 [[ $rc == 2 ]] && ok "--network refused for non-codex jobs" || bad "--network on agent job: exit $rc"
 sleep 1
 

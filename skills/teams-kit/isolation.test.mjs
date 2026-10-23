@@ -197,3 +197,21 @@ test('BEING_SANDBOX_NET accepts only none|host: a typo stops the launch instead 
   const r = run('hots');
   assert.equal(r.status, 5, r.stderr); assert.match(r.stderr, /BEING_SANDBOX_NET=hots \(none\|host\)/);
 });
+
+test('bwrap: a node installed outside /usr is bound into the sandbox at /run/bin/node; one under /usr is not', { skip: !HAVE_BWRAP && 'no bwrap' }, (t) => {
+  const { dir, k, st, ws } = kit(t);
+  const fakeNode = path.join(dir, 'opt-node', 'bin', 'node');
+  mkdirSync(path.dirname(fakeNode), { recursive: true }); writeFileSync(fakeNode, '#!/bin/sh\n'); chmodSync(fakeNode, 0o755);
+  const dry = (nodeBin) => spawnSync(path.join(k, 'being-launch'), ['job', '--', 'true'], { encoding: 'utf8',
+    env: { ...process.env, PATH: `${path.join(dir, 'cc', 'bin')}:${process.env.PATH}`, BEING_KIT_HOME: k, BEING_STATE_DIR: st, BEING_WORKSPACE: ws,
+      BEING_NAME: 'Testbeing', BEING_ISOLATION: 'bwrap', BEING_ISOLATION_LANES: 'all', BEING_LAUNCH_DRY: '1', BEING_NODE_BIN: nodeBin } });
+  const outside = dry(fakeNode);
+  assert.equal(outside.status, 0, outside.stderr);
+  assert.ok(outside.stdout.includes(`--ro-bind ${fakeNode} /run/bin/node`), outside.stdout);
+  const usr = spawnSync('sh', ['-c', 'for n in /usr/bin/*; do [ -x "$n" ] && [ ! -L "$n" ] && { echo "$n"; break; }; done'], { encoding: 'utf8' }).stdout.trim();
+  const inside = dry(usr);
+  assert.equal(inside.status, 0, inside.stderr);
+  assert.ok(!inside.stdout.includes('/run/bin/node'), 'a /usr node is already in the sandbox');
+  const none = dry(path.join(dir, 'missing-node'));
+  assert.equal(none.status, 5); assert.match(none.stderr, /no node binary/);
+});

@@ -32,11 +32,11 @@ OWNER=00000000-0000-0000-0000-00000000a001
 # Stub clients: one JSON line per call (args, cwd, lane env, grant scope). The fast "voice" call drops every "not".
 cat >"$TMP/bin/claude" <<STUB
 #!/usr/bin/env python3
-import json,os,subprocess,sys
+import fcntl,json,os,subprocess,sys
 a=sys.argv[1:]; p=a[-1] if a else ""
 scope=subprocess.run(["node","$KIT/scope.mjs","show"],capture_output=True,text=True).stdout.strip()
 rec={"args":a[:-1],"cwd":os.getcwd(),"lane":os.environ.get("BEING_LANE",""),"nomem":os.environ.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY",""),"scope":scope,"prompt":p}
-open("$TMP/calls.jsonl","a").write(json.dumps(rec)+"\n")
+with open("$TMP/calls.jsonl","a") as f: fcntl.flock(f,fcntl.LOCK_EX); f.write(json.dumps(rec)+"\n")   # lanes run in parallel
 if "MESSAGES:" in p and "write" in p.split("MESSAGES:")[0]:
     ms=json.loads(p.split("MESSAGES:\n",1)[1].split("\nReply with ONLY")[0])
     print(json.dumps({"messages":[{"id":m["id"],"html":m["html"].replace(" not "," ")} for m in ms]}))
@@ -49,6 +49,18 @@ envrun() { (set -a; . "$KIT/.env"; set +a; cd "$KIT"; "$@"); }
 calls() { python3 - "$TMP/calls.jsonl" "$@"; }   # query helper over the recorded calls
 day=$(date +%F)
 u5() { python3 -c 'import uuid,sys; print(uuid.uuid5(uuid.NAMESPACE_URL, sys.argv[1]))' "$1"; }
+# Lane runners, and the triage a no-reply escalation wakes, start in the background (setsid): wait until nothing is
+# queued or dispatching and no triage or lane lock is held (bounded). Locks are probed only once every queue is empty.
+wait_lanes() {
+  local _ f busy
+  for _ in $(seq 1 150); do
+    busy=0
+    for f in "$ST/queue.jsonl" "$ST/work.jsonl" "$ST"/work.dispatch.* "$ST"/lanes/*.inbox.jsonl; do [[ -s $f ]] && busy=1; done
+    if (( !busy )); then for f in "$ST/triage.lock" "$ST"/lanes/*.lock; do [[ -e $f ]] && ! flock -n "$f" true && busy=1; done; fi
+    (( busy )) || return 0; sleep 0.2
+  done
+  echo "  (lane runners still busy after 30 s)"
+}
 
 # 1. Work: owner, two teammate chats and a group message from the owner each get their own session.
 rm -f "$TMP/calls.jsonl"
@@ -56,11 +68,12 @@ rm -f "$TMP/calls.jsonl"
   printf '{"chatId":"19:chatA","messageId":"a1","fromId":"kim","chatType":"oneOnOne","text":"hi from kim"}\n'
   printf '{"chatId":"19:chatB","messageId":"b1","fromId":"lee","chatType":"group","text":"nova, hi from lee"}\n'
   printf '{"chatId":"19:chatB","messageId":"b2","fromId":"%s","chatType":"group","text":"yes nova"}\n' "$OWNER"; } >"$ST/work.jsonl"
-"$KIT/being-handle" work
+"$KIT/being-handle" work; wait_lanes
 calls "$(u5 "being-daily/nova/$day")" "$(u5 "being-daily/nova/$day/team:19:chatA")" "$(u5 "being-daily/nova/$day/team:19:chatB")" <<'PY' \
   && ok "owner + each teammate chat run in their own session" || bad "work sessions per lane"
 import json,sys
-f,own,a,b=sys.argv[1:5]; runs=[json.loads(l) for l in open(f) if "--session-id" in l]
+# The owner's group message gets no reply from the stub, so the group lane escalates it: that owner-lane note run is not counted.
+f,own,a,b=sys.argv[1:5]; runs=[r for r in map(json.loads,open(f)) if "--session-id" in r["args"] and '"addressedBy": "note"' not in r["prompt"]]
 sid=lambda r: r["args"][r["args"].index("--session-id")+1]
 got={sid(r):r for r in runs}
 assert set(got)=={own,a,b}, got.keys()
@@ -81,10 +94,10 @@ PY
 rm -f "$TMP/calls.jsonl"
 { echo '{"lane":"job","jobId":"j1","name":"x","status":"done","exit":0,"chatId":"19:chatA","scope":"chats:19:chatA","messageId":"job:j1"}'
   echo '{"lane":"job","jobId":"j2","name":"y","status":"done","exit":0,"chatId":"19:own","scope":"full","messageId":"job:j2"}'; } >"$ST/work.jsonl"
-"$KIT/being-handle" work
+"$KIT/being-handle" work; wait_lanes
 calls "$(u5 "being-daily/nova/$day")" "$(u5 "being-daily/nova/$day/team:19:chatA")" <<'PY' && ok "job results go back to the lane that started them" || bad "job lanes"
 import json,sys
-f,own,a=sys.argv[1:4]; rs=[json.loads(l) for l in open(f)]
+f,own,a=sys.argv[1:4]; rs=[r for r in map(json.loads,open(f)) if "job result" in r["prompt"]]
 key=lambda r: r["args"][r["args"].index("--resume" if "--resume" in r["args"] else "--session-id")+1]
 m={json.loads(r["prompt"].splitlines()[-1])["jobId"]:(key(r),r["lane"]) for r in rs}
 assert m=={"j1":(a,"team:19:chatA"),"j2":(own,"owner")}, m
@@ -96,8 +109,8 @@ printf '{"chatId":"19:own","messageId":"o9","fromId":"%s","chatType":"oneOnOne",
 { printf '{"chatId":"19:own","messageId":"o2","fromId":"%s","chatType":"oneOnOne","text":"status?"}\n' "$OWNER"
   printf '{"chatId":"19:chatA","messageId":"a2","fromId":"kim","chatType":"oneOnOne","text":"status?"}\n'; } >"$ST/queue.jsonl"
 envrun ./being-handle triage
-sleep 0.5; flock "$ST/handler.lock" true; rm -f "$ST/work.jsonl"   # let the work run that triage started finish
-calls "$(u5 "being-fast/nova/$day")" "$(u5 "being-fast/nova/$day/team:19:chatA")" <<'PY' && ok "triage: own fast session per lane; teammate live state excludes owner items" || bad "triage lanes"
+wait_lanes; rm -f "$ST/work.jsonl"   # let the work run that triage started finish
+calls "$(u5 "being-fast2/nova/$day")" "$(u5 "being-fast2/nova/$day/team:19:chatA")" <<'PY' && ok "triage: own fast session per lane; teammate live state excludes owner items" || bad "triage lanes"
 import json,sys
 f,own,a=sys.argv[1:4]; rs=[json.loads(l) for l in open(f) if "[Teams triage" in l]
 sid=lambda r: r["args"][r["args"].index("--resume" if "--resume" in r["args"] else "--session-id")+1]
@@ -147,7 +160,7 @@ set +e; out=$(BEING_SINGLE_USER_ACK=1 envrun ./being-teams doctor 2>&1); rc=$?; 
 echo "BEING_SINGLE_USER_ACK=1" >>"$KIT/.env"; rm -f "$TMP/calls.jsonl"
 { printf '{"chatId":"19:own","messageId":"o3","fromId":"%s","chatType":"oneOnOne","text":"go"}\n' "$OWNER"
   printf '{"chatId":"19:chatA","messageId":"a3","fromId":"kim","chatType":"oneOnOne","text":"hi"}\n'; } >"$ST/work.jsonl"
-"$KIT/being-handle" work
+"$KIT/being-handle" work; wait_lanes
 calls <<'PY' && ok "ack mode: teammate run uses dontAsk + allowlist, owner run unchanged" || bad "ack mode flags"
 import json,sys
 rs=[json.loads(l) for l in open(sys.argv[1]) if "--model" in l and "[Teams triage" not in l and "You write" not in l]

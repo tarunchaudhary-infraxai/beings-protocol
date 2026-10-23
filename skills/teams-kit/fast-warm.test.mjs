@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -156,8 +156,14 @@ writeFileSync(process.env.BEING_STATE_DIR + '/ack-in.json', readFileSync(0, 'utf
     return { ack: JSON.parse(readFileSync(path.join(st, 'ack-in.json'), 'utf8')), log: readFileSync(path.join(st, 'handler.log'), 'utf8'),
       work: existsSync(path.join(st, 'work.jsonl')) ? readFileSync(path.join(st, 'work.jsonl'), 'utf8') : '' };
   };
-  const serve = async () => {
-    const d = spawn('node', [path.join(kit, 'fast-warm.mjs'), 'serve'], { env: { ...env, BEING_FAST_WARM_CMD: fake }, stdio: 'ignore' });
+  // nodeOnlyPath: the daemon's PATH holds node but no claude, so only the named variable can find the client.
+  const serve = async (cmdVar = 'BEING_FAST_WARM_CMD', nodeOnlyPath = false) => {
+    const extra = { [cmdVar]: fake };
+    if (nodeOnlyPath) {
+      const nb = path.join(dir, 'node-only'); mkdirSync(nb, { recursive: true }); symlinkSync(process.execPath, path.join(nb, 'node'));
+      extra.PATH = `${nb}:/usr/bin:/bin`;
+    }
+    const d = spawn(process.execPath, [path.join(kit, 'fast-warm.mjs'), 'serve'], { env: { ...env, ...extra }, stdio: 'ignore' });
     t.after(() => d.kill('SIGTERM'));
     for (let i = 0; i < 50 && !existsSync(path.join(st, 'fast-warm.sock')); i++) await sleep(50);
   };
@@ -183,6 +189,13 @@ test('triage on the warm daemon: direct answer for status, ack + work for a requ
   assert.equal(by.m2.answered, true); assert.equal(by.m2.needsWork, false);
   assert.equal(by.m3.answered, false); assert.equal(by.m3.needsWork, true);
   assert.match(r.work, /"messageId": "m3"/); assert.doesNotMatch(r.work, /"messageId": "m2"/);
+});
+
+test('the warm daemon uses BEING_CLAUDE_BIN when BEING_FAST_WARM_CMD is unset', async (t) => {
+  const { triage, serve } = kitSandbox(t);
+  await serve('BEING_CLAUDE_BIN', true);
+  const r = triage([msg('m6', 'status?')]);
+  assert.match(r.log, /fast warm ok \(triage, owner/);
 });
 
 test('a warm turn that times out falls back to the cold call', async (t) => {

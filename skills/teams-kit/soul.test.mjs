@@ -70,7 +70,10 @@ if (res) fs.writeFileSync(res, 'done');
 
 function kit(t, { soul = SOUL } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'soul-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));   // detached children may still be writing
+  t.after(async () => {   // the kit's detached children (a job's wake, the work run it starts) finish before the dir goes
+    for (let i = 0; i < 300 && spawnSync('pgrep', ['-f', `${dir}/kit/being-(handle|job)`]).status === 0; i++) await sleep(100);
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  });
   const k = path.join(dir, 'kit'), st = path.join(dir, 'state'), bin = path.join(dir, 'bin'), ws = path.join(dir, 'ws'), be = path.join(ws, '.beings');
   for (const d of [k, st, bin, be, path.join(dir, 'home'), path.join(dir, 'cs'), path.join(st, 'jobs')]) mkdirSync(d, { recursive: true });
   for (const f of ['being-handle', 'being-status', 'being-sessions', 'being-board', 'being-job', 'mesh.py', 'soul.py', 'scope.mjs', 'kit-env.mjs',
