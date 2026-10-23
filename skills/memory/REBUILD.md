@@ -50,12 +50,12 @@ User: "Seed your memory from my identity files"
 Being: 
   1. Reads .beings/MEMORY.md, TOOLS.md, CONVENTIONS.md, GOALS.md, AUTONOMY.md, IDENTITY.md, HUB.md
   2. For each, calls write_note with a clean title and appropriate folder:
-     - identity/treta-himani.md
-     - org/naturnest-ai.md
+     - identity/nova.md
+     - org/example-org.md
      - products/docforge-skill.md
      - team/roster.md
      - patterns/communication-conventions.md
-     - decisions/treta-himani-merge.md
+     - decisions/memory-backend-choice.md
   3. Uses [[wikilinks]] to create relations between concepts
   4. Reports what was seeded
 ```

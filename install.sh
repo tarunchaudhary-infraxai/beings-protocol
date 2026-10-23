@@ -9,7 +9,7 @@
 #
 #   # Birth a standalone Global Being at ~/beings/<name>/
 #   curl -fsSL https://raw.githubusercontent.com/VeltriaAI/beings-protocol/main/install.sh | bash -s -- --global
-#   curl -fsSL https://raw.githubusercontent.com/VeltriaAI/beings-protocol/main/install.sh | bash -s -- --global --name himani --yes
+#   curl -fsSL https://raw.githubusercontent.com/VeltriaAI/beings-protocol/main/install.sh | bash -s -- --global --name nova --yes
 #
 #   # Update an existing Being (interactive)
 #   curl -fsSL https://raw.githubusercontent.com/VeltriaAI/beings-protocol/main/install.sh | bash -s -- --update

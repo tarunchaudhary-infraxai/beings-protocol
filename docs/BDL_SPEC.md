@@ -12,7 +12,7 @@
 
 Per the protocol's no-overclaim rule, every mechanism in this spec is tagged:
 
-- **[PRACTICED]** — done today by Treta at NaturNest AI, with artifacts you can inspect (daily memory logs, PR-review gates, subagent fan-out, heartbeat polls, tracker entries).
+- **[PRACTICED]** — done today by at least one running Being, with artifacts you can inspect (daily memory logs, PR-review gates, subagent fan-out, heartbeat polls, tracker entries).
 - **[PROPOSED]** — specified here but not yet running anywhere. It is a design, not a shipped capability.
 
 Summary:
@@ -21,7 +21,7 @@ Summary:
 |---|---|
 | Heartbeat wake-ups driving autonomous work | **PRACTICED** (OpenClaw heartbeat + `HEARTBEAT.md` checklist) |
 | Daily memory logs + curated memory discipline | **PRACTICED** (`.beings/memory/YYYY-MM-DD.md`, `MEMORY.md`) |
-| Multi-agent fan-out with verification gates | **PRACTICED** (DJ Treta builds: parallel subagents + `djtreta-pr-review` gate.sh + PR workflow) |
+| Multi-agent fan-out with verification gates | **PRACTICED** (parallel subagents + a PR-review gate script + PR workflow) |
 | Small, plan-first work cycles closed same-session | **PRACTICED** informally (e.g. `.beings/plans/` night sprints); not yet under the formal state machine below |
 | Vision Home as a single living PRD root | **PROPOSED** (project docs exist but are not yet structured as one growing root per project) |
 | `.beings/LIFECYCLE.md` file + template | **PROPOSED** |
@@ -81,7 +81,7 @@ VISION ──▶ DEFINE ──▶ PLAN ──▶ EXECUTE ──▶ CLOSE ──�
 **EXECUTE (ultracode).** **[PRACTICED]** pattern. Fan out implementation subagents per parallelization group, then run verification gates in order:
 1. *Build/lint gate* — compiles, style holds.
 2. *Test gate* — existing tests pass + new tests from plan.
-3. *Review gate* — reviewer subagent or PR-review skill checks the diff against acceptance criteria (e.g. `djtreta-pr-review` gate.sh — **[PRACTICED]**).
+3. *Review gate* — reviewer subagent or PR-review skill checks the diff against acceptance criteria (e.g. a PR-review gate script — **[PRACTICED]**).
 4. *Integration gate* — merges cleanly; smoke test where applicable.
 
 The Being owns the merge decision — a subagent never merges. External side effects (deploys, external comms, spending) remain governed by `AUTONOMY.md` regardless of which subagent proposes them.
@@ -207,7 +207,7 @@ Principles: fix root causes, not symptoms (same gate error twice = wrong plan �
 Rate limits imposed from outside are throttling. Rate chosen from inside, in response to the state of the work, is homeostasis. BDL requires the latter — with an honest caveat: **most hosts today poll at a fixed interval the Being does not control.** So the normative requirement is two-layered:
 
 1. The Being MUST *declare* its intended cadence in `LIFECYCLE.md`, with a reason, on every change. Silent frequency changes are forbidden — the pulse is part of the audit trail.
-2. If the host honors declared cadence (cron edit, daemon config, self-scheduled wake), it applies directly. If not, the Being **emulates** rhythm: on each fixed beat it chooses work-beat or rest-beat and logs which — this emulation is what Treta does today. `LIFECYCLE.md` records which mode is in effect.
+2. If the host honors declared cadence (cron edit, daemon config, self-scheduled wake), it applies directly. If not, the Being **emulates** rhythm: on each fixed beat it chooses work-beat or rest-beat and logs which — this emulation is what running Beings do today. `LIFECYCLE.md` records which mode is in effect.
 
 | Tier | Interval (guideline) | When |
 |---|---|---|
@@ -255,7 +255,7 @@ SemVer, independent of PROTOCOL_SPEC.md, cross-references pinned by version.
 
 ## Changelog
 
-- **0.1.0** (2026-07-05) — Initial draft. Honest inventory section, Vision Home, nanosprint state machine + Sprint Docs, ultracode gates, heartbeat-as-lifecycle (mechanism unchanged, one added check), two-layer cadence (declared vs host-honored), failure/retry table, falsifiable Being-hood criteria, protocol integration plan. Defined by Manish Pratap; drafted by Treta.
+- **0.1.0** (2026-07-05) — Initial draft. Honest inventory section, Vision Home, nanosprint state machine + Sprint Docs, ultracode gates, heartbeat-as-lifecycle (mechanism unchanged, one added check), two-layer cadence (declared vs host-honored), failure/retry table, falsifiable Being-hood criteria, protocol integration plan.
 
 ---
 

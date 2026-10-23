@@ -34,7 +34,7 @@ Every memory is a markdown file like this:
 title: DocForge Skill
 type: note
 permalink: products/docforge-skill
-tags: [skill, infrax-ai]
+tags: [skill, documents]
 ---
 
 # DocForge Skill
@@ -43,13 +43,13 @@ Professional PDF proposal generator at ~/skills/docforge/.
 
 ## Observations
 - [location] ~/skills/docforge/
-- [purpose] PDF proposal generator for InfraX AI deals
+- [purpose] PDF proposal generator for client deals
 - [rule] Always use --no-toc flag unless TOC explicitly requested
-- [contact] contact@infrax.ai, +91-8826140817
+- [contact] sales@example.com
 
 ## Relations
-- implements [[Deal Pipeline]]
-- outputs_to [[OneDrive PreSales]]
+- implements [[Proposal Workflow]]
+- outputs_to [[Shared Proposals Folder]]
 - depends_on [[Playwright]]
 ```
 
@@ -65,10 +65,10 @@ Write notes in your own words. basic-memory indexes them into a searchable graph
 ```
 ┌──────────────────────────────────────────────┐
 │  memory-graph/                               │  ← Source of truth
-│  ├── identity/treta-himani.md                │    Committed to git
-│  ├── team/naturnest-roster.md                │    Hand-editable
+│  ├── identity/nova.md                        │    Committed to git
+│  ├── team/roster.md                          │    Hand-editable
 │  ├── products/docforge-skill.md              │    Obsidian-compatible
-│  └── decisions/treta-himani-merge.md         │
+│  └── decisions/memory-backend-choice.md      │
 └──────────────────────────────────────────────┘
             ↓ watcher (inotify/fsevents)
 ┌──────────────────────────────────────────────┐

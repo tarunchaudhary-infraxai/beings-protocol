@@ -5,10 +5,10 @@ shell CLI wrapper so the developer can start future sessions with a
 single command matching the Being's name:
 
 ```bash
-parth                # new session with Parth
-parth "quick q"      # new session with an initial prompt
-parth resume         # resume a past session
-parth continue       # continue the most recent session
+nova                 # new session with Nova
+nova "quick q"       # new session with an initial prompt
+nova resume          # resume a past session
+nova continue        # continue the most recent session
 ```
 
 This skill is **Claude Code only**. Other AI tools (Cursor, Codex,
