@@ -13,6 +13,11 @@ workspace = "~/beings/{name}"    # the Being's home on its box
 config_dir = "~/.config/{name}"  # one key folder per Being (0700): secrets live here, never in git
 linux_user = "{name}"            # the Being's own Linux user on its box
 
+[kit]
+# Components install.sh --config adds (same as --with): teams-kit, owner-access, runner, tunnel, desktop, monitor,
+# memory-sync, statusline. Optional ones stay off until switched on.
+with = ["teams-kit"]
+
 [m365]
 # Microsoft 365 identities. The app and tenant ids go in ops/teams-kit/.env (M365_CLIENT_ID, M365_TENANT_ID).
 being_upn = "{name}@example.com"
@@ -77,10 +82,10 @@ app_keys = []                    # file names inside config_dir
 # Relative paths are inside the workspace. Owner sessions stay empty (off) until an owner row in [access] is on.
 [sessions]
 being_teams = "ops/teams-kit/state/token-cache.json"     # Being API session, Teams scopes
-being_outlook = "ops/teams-kit/state/token-cache.json"   # Being API session, mail scopes (same cache, separate sign-in)
+being_outlook = "ops/teams-kit/state/being-outlook-cache.json"   # Being API session, mail scopes (its own file)
 being_browser = "{config_dir}/being-browser"             # Being browser profile (0700)
-owner_teams = ""                 # owner API session, Teams scopes, e.g. "ops/teams-kit/state/owner-token-cache.json"
-owner_outlook = ""               # owner API session, mail scopes (may be the same owner cache)
+owner_teams = ""                 # owner API session, Teams scopes, e.g. "ops/teams-kit/state/token-cache-owner.json"
+owner_outlook = ""               # owner API session, mail scopes, e.g. "ops/teams-kit/state/owner-outlook-cache.json"
 owner_browser = ""               # owner browser profile, e.g. "{config_dir}/owner-browser"
 
 [box]

@@ -20,7 +20,7 @@ behalf of people.
 | App runners and fleet | `templates/kit/bin/stack-runner`, `desktop-shim` → `ops/kit-templates/` | `--with operations`, then `being stack new` |
 | Unit and job templates | `templates/kit/systemd/`, `templates/kit/jobs/` → `ops/kit-templates/` | `--with operations` |
 | Status line | `templates/kit/statusline.sh` → `~/.claude/beings-statusline.sh` | `--with statusline` |
-| Settings file | `templates/kit/being.toml.example` | `install.sh --config being.toml` |
+| Settings file | `templates/being.toml.example` | `install.sh --config being.toml` |
 | Model routing | [MODEL_ROUTING.md](MODEL_ROUTING.md) | `.env` |
 | Birth / upgrade | [BIRTH_AND_UPGRADE.md](BIRTH_AND_UPGRADE.md) | — |
 

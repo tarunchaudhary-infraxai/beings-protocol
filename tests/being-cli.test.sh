@@ -47,19 +47,22 @@ cat >"$TMP/b.toml" <<'EOF'
 name = "nova"   # trailing comment
 owner = 'Sam O"Brien'
 [access]
-allow = ["teams-owner-chat",
-  "memory", # inline
-]
-being-mail = true
+owner_chat = true   # inline
+being_mail = true
 memory = false
+[kit]
+tags = ["a",
+  "b", # inline
+]
 [kit]
 with = ["operations", "monitor"]
 EOF
 [[ "$("$CFG" "$TMP/b.toml" get being.owner)" == 'Sam O"Brien' ]] && ok "config: literal string" || bad "config literal string"
-[[ "$("$CFG" "$TMP/b.toml" list access | paste -sd, -)" == "teams-owner-chat,being-mail" ]] && ok "config: access list (allow + true - false)" || bad "config access list: $("$CFG" "$TMP/b.toml" list access | paste -sd, -)"
+[[ "$("$CFG" "$TMP/b.toml" list access | paste -sd, -)" == "owner_chat,being_mail" ]] && ok "config: access list (allow + true - false)" || bad "config access list: $("$CFG" "$TMP/b.toml" list access | paste -sd, -)"
 [[ "$("$CFG" "$TMP/b.toml" get kit.with | paste -sd, -)" == "operations,monitor" ]] && ok "config: multi-line array" || bad "config array"
 [[ "$("$CFG" "$TMP/b.toml" get being.tz fallback)" == fallback ]] && ok "config: default for a missing key" || bad "config default"
-printf '[a.b]\nx = 1\n' >"$TMP/bad.toml"; "$CFG" "$TMP/bad.toml" check 2>/dev/null && bad "nested table accepted" || ok "config: nested tables refused"
+printf '[a.b]\nx = 1\n' >"$TMP/dot.toml"; [[ "$("$CFG" "$TMP/dot.toml" get a.b.x)" == 1 ]] && ok "config: dotted table" || bad "dotted table"
+printf '[a]\nx = { y = 1 }\n' >"$TMP/bad.toml"; "$CFG" "$TMP/bad.toml" check 2>/dev/null && bad "inline table accepted" || ok "config: unsupported syntax refused"
 printf '[a]\nx = {y = 1}\n' >"$TMP/bad2.toml"; "$CFG" "$TMP/bad2.toml" check 2>/dev/null && bad "inline table accepted" || ok "config: inline tables refused"
 
 # 2. stack new: runner generated, registered, never overwritten silently.
@@ -113,7 +116,7 @@ ENV
 cp "$TMP/b.toml" "$W/being.toml"
 out="$(nova access)"
 for s in "Being Teams" "Being Outlook" "Owner Teams" "Owner Outlook"; do grep -q "$s" <<<"$out" || bad "access misses $s"; done
-grep -q 'being-mail' <<<"$out" && ok "access shows the [access] list and four sessions" || bad "access: $out"
+grep -q 'being_mail' <<<"$out" && ok "access shows the [access] list and four sessions" || bad "access: $out"
 : >"$LOG"; nova login being >/dev/null 2>&1 || bad "login being failed: $(tail -2 "$LOG")"
 grep -q "teams-login-device.mjs --upn nova@example.test --cache $KIT/state/token-cache.json --scopes Chat.ReadWrite" "$LOG" \
   && grep -q "teams-login-device.mjs --upn nova@example.test --cache $KIT/state/being-outlook-cache.json --scopes Mail.ReadWrite" "$LOG" \
@@ -142,7 +145,7 @@ grep -q "MEMORY.md is 30000 bytes" <<<"$out" && ok "doctor: index over ~24 KB fa
 grep -q "should be 0700" <<<"$out" && ok "doctor: secrets folder mode" || bad "doctor secrets mode"
 grep -q "owner teams is signed in but not on the \[access\] list" <<<"$out" && ok "doctor: login outside the access list" || bad "doctor access: $out"
 printf 'short\n' >"$IDX"; chmod 700 "$H/.config/nova"
-sed -i 's/^allow = \["teams-owner-chat",/allow = ["teams-owner-chat", "owner-teams-read", "owner-mail-read",/' "$W/being.toml"
+sed -i 's/^owner_chat = true/owner_chat = true\nowner_teams_read = true\nowner_mail_read = true/' "$W/being.toml"
 out="$(nova doctor 2>&1)" && ok "doctor passes once fixed" || bad "doctor still failing: $(grep FAIL <<<"$out")"
 
 # 8. Session registry: never forgets, exit 2 when a transcript disappears.

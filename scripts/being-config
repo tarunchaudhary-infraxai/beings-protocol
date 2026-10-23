@@ -21,7 +21,7 @@ shared_mailbox_send owner_channel_posts mail_rules area_approvers github_being g
 kubernetes notion tunnel cloudflare_api app_keys model_hubs model_proxy vpn device_sync desktop""".split()
 REQUIRED_ON = {"owner_chat"}
 OWNER_ROWS = {k for k in ACCESS_KEYS if k.startswith("owner_") and k != "owner_chat"} | {"shared_mailbox_read", "shared_mailbox_send", "mail_rules"}
-SECTIONS = {"being", "m365", "models", "access", "sessions", "box", "tunnel", "desktop"}
+SECTIONS = {"being", "m365", "models", "access", "sessions", "box", "tunnel", "desktop", "kit"}
 PLACEHOLDERS = ("name", "linux_user", "config_dir", "workspace")
 
 

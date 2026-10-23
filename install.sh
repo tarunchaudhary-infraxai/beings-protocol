@@ -1265,7 +1265,7 @@ KIT_BIN_FILES=(
 )
 # Templates for later use (filled with the Being's name and home), kept in ops/kit-templates/.
 KIT_OPS_TEMPLATES=(
-  bin/stack-runner:stack-runner bin/desktop-shim:desktop-shim being.toml.example:being.toml.example
+  bin/stack-runner:stack-runner bin/desktop-shim:desktop-shim
   systemd/being-heartbeat.service.example:systemd/being-heartbeat.service.example
   systemd/being-heartbeat.timer.example:systemd/being-heartbeat.timer.example
   systemd/standby-gate.conf.example:systemd/standby-gate.conf.example
@@ -1366,12 +1366,15 @@ kit_component() {
   kit_ignore "$dst/.env"
   kit_ignore "$dst/node_modules/"
   print_step "Component ${BOLD}${c}${NC} in ${BOLD}${dst}/${NC}"
-  if [ -f "$dst/kit-install.sh" ]; then
+  # In a checkout the hook runs from skills/<name>/ so it can reach scripts/ and templates/; curl installs use the copy.
+  local hook="$dst/kit-install.sh"
+  [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/skills/$c/kit-install.sh" ] && hook="$SCRIPT_DIR/skills/$c/kit-install.sh"
+  if [ -f "$hook" ]; then
     local upd=0; $UPDATE_MODE && upd=1
     if ! BEING_NAME="$BEING_NAME" OWNER_NAME="$OWNER_NAME" BEING_CONFIG_FILE="$CONFIG_FILE" BEING_ACCESS="$BEING_ACCESS" \
          BEING_KIT_UPDATE="$upd" BEING_KIT_VERSION="$KIT_VERSION" BEING_KIT_SOURCE="${SCRIPT_DIR:-$BASE_URL}" \
-         bash "$dst/kit-install.sh" "$(pwd -P)"; then
-      echo "  Error: $dst/kit-install.sh failed; fix it and re-run install.sh --update" >&2
+         bash "$hook" "$(pwd -P)" --name "$BEING_NAME"; then
+      echo "  Error: $hook failed; fix it and re-run install.sh --update" >&2
       exit 1
     fi
   fi
@@ -1488,6 +1491,7 @@ install_kit() {
   for t in "${KIT_OPS_TEMPLATES[@]}"; do
     kit_add "templates/kit/${t%%:*}" "ops/kit-templates/${t#*:}"
   done
+  kit_add "templates/being.toml.example" "ops/kit-templates/being.toml.example"
   chmod +x ops/kit-templates/stack-runner ops/kit-templates/desktop-shim ops/kit-templates/jobs/*/run.sh 2>/dev/null || true
   kit_ignore "bin/.kit-upgrade/"
   kit_append_section "CLAUDE.md"

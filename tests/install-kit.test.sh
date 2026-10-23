@@ -108,12 +108,13 @@ track_private = true
 [kit]
 with = ["operations"]
 [access]
-allow = ["teams-owner-chat", "memory"]
+owner_chat = true
+memory = true
 TOML
 inst "$h" --update --config "$TMP/being.toml" && [[ -x "$h/bin/kira" ]] && grep -q "Ana Lee" "$h/.beings/AUTONOMY-MATRIX.md" \
   && cmp -s "$TMP/being.toml" "$h/being.toml" && ok "--config: name, owner, components, being.toml copied" || bad "--config: $(tail -3 "$TMP/out")"
 ! grep -qxF ".beings-local/" "$h/.gitignore" 2>/dev/null && ok "track_private: .beings-local/ not ignored" || bad "track_private"
-grep -q "teams-owner-chat, memory" "$TMP/out" && ok "access list shown at install" || bad "access list not shown"
+grep -q "owner_chat, memory" "$TMP/out" && ok "access list shown at install" || bad "access list not shown"
 h="$TMP/cfg2"; plain "$h"; inst "$h" --update --config "$TMP/being.toml" --owner "Sam Lee" --name nova
 [[ -x "$h/bin/nova" ]] && grep -q "Sam Lee" "$h/.beings/AUTONOMY-MATRIX.md" && ok "flags win over --config" || bad "flag precedence"
 printf '[being]\nname = {x = 1}\n' >"$TMP/bad.toml"; h="$TMP/cfg3"; plain "$h"; before=$(tree "$h")
@@ -150,7 +151,7 @@ printf '%s|%s|%s|%s|%s\n' "$1" "$BEING_NAME" "$OWNER_NAME" "$BEING_ACCESS" "$BEI
 HOOK
 INSTALL="$K/install.sh"; h="$TMP/comp"; plain "$h"
 inst "$h" --update --config "$TMP/being.toml" --with demo
-[[ -x "$h/ops/demo/demo-tool" ]] && grep -qF "$(cd "$h" && pwd -P)|kira|Ana Lee|teams-owner-chat,memory|1" "$h/ops/demo/hook.log" \
+[[ -x "$h/ops/demo/demo-tool" ]] && grep -qF "$(cd "$h" && pwd -P)|kira|Ana Lee|owner_chat,memory|1" "$h/ops/demo/hook.log" \
   && ok "component copied and its hook ran with the settings" || bad "component: $(tail -3 "$TMP/out")"
 inst "$h" --update --with nosuchthing && bad "unknown component accepted" || ok "unknown component refused"
 INSTALL="$REPO/install.sh"

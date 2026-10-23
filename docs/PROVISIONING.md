@@ -51,10 +51,10 @@ session is copied between boxes: each box signs in on its own (copied logins log
 | Session | Account | Who signs in | Stored in | `being.toml` |
 |---|---|---|---|---|
 | Being Teams | the Being | owner or admin, device code, as the Being | `BEING_CACHE` (0600) | `[sessions].being_teams` |
-| Being Outlook | the Being | same, as the Being | `BEING_CACHE`, or `BEING_MAIL_CACHE` if the Being's mail scripts use their own | `being_outlook` |
+| Being Outlook | the Being | same, as the Being | `BEING_MAIL_CACHE` (default `being-outlook-cache.json` next to `BEING_CACHE`; older installs fall back to `BEING_CACHE`) | `being_outlook` |
 | Being browser | the Being | the Being, once | `BEING_BROWSER_PROFILE` (0700) | `being_browser` |
 | Owner Teams | the owner | **the owner, themselves** | `OWNER_CACHE` (0600), never the Being's file | `owner_teams` (off) |
-| Owner Outlook | the owner | **the owner, themselves** | `OWNER_CACHE` or `OWNER_MAIL_CACHE` | `owner_outlook` (off) |
+| Owner Outlook | the owner | **the owner, themselves** | `OWNER_MAIL_CACHE` (default `owner-outlook-cache.json` next to `OWNER_CACHE`) | `owner_outlook` (off) |
 | Owner browser | the owner | **the owner, themselves** | `OWNER_BROWSER_PROFILE` (0700) | `owner_browser` (off) |
 
 Steps (in `ops/teams-kit`, after `set -a; . ./.env; set +a`):

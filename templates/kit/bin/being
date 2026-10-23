@@ -114,24 +114,40 @@ being_config() {
 access_list() { local f; f="$(toml_file)"; [[ -n "$f" ]] && being_config "$f" list access; return 0; }
 
 declare -A ACCESS_INFO=(
-  [teams-owner-chat]="Being | Teams 1:1 with the owner: read + send (required)"
-  [teams-teammates]="Being | Teams chats with teammates: reply in their own chat"
-  [teams-groups]="Being | Teams group chats and channels: read + post"
-  [being-mail]="Being | its own mailbox: read + send"
-  [being-files]="Being | its own OneDrive: upload + share by name"
-  [presence]="Being | Teams presence and photo"
-  [claude-code]="Being | Claude Code seat on this box"
-  [codex]="Being | Codex login on this box"
+  [owner_chat]="Being | Teams 1:1 with the owner: read + send (required)"
+  [claude]="Being | Claude Code seat on this box"
   [memory]="local | memory search: read + write notes"
-  [owner-teams-read]="Owner | owner's Teams, read only"
-  [owner-teams-send]="Owner | owner's Teams, send after approval"
-  [owner-mail-read]="Owner | owner's mail, read only"
-  [owner-mail-send]="Owner | owner's mail, send after approval"
-  [owner-web]="Owner | owner's browser session: files and web pages, read only"
-  [github]="Being | own GitHub account or repo-limited token"
-  [github-owner]="Owner | owner's GitHub login (very high risk)"
-  [cloud-cli]="either | cloud CLIs (very high risk)"
+  [teammate_chats]="Being | Teams chats with teammates: reply in their own chat"
+  [group_chats]="Being | Teams group chats and channels: read + post"
+  [being_mail]="Being | its own mailbox: read + send"
+  [being_onedrive]="Being | its own OneDrive: upload + share by name"
+  [presence]="Being | Teams presence and photo"
+  [codex]="Being | Codex login on this box"
+  [owner_teams_read]="Owner | owner's Teams, read only"
+  [owner_teams_send]="Owner | owner's Teams, send after approval"
+  [owner_mail_read]="Owner | owner's mail, read only"
+  [owner_mail_send]="Owner | owner's mail, send after approval"
+  [owner_files]="Owner | owner's files (OneDrive, SharePoint), read only"
+  [owner_web]="Owner | owner's Outlook/Teams web pages, read only"
+  [shared_mailbox_read]="Owner | shared mailbox, read only"
+  [shared_mailbox_send]="Owner | shared mailbox drafts and reviewed batch send"
+  [owner_channel_posts]="Owner | posts in one named channel as the owner, after a go"
+  [mail_rules]="Owner | pre-approved mail forwarding rules"
+  [area_approvers]="- | named people who can say "go" for one area"
+  [github_being]="Being | own GitHub account or repo-limited token"
+  [github_owner]="Owner | owner's GitHub login (very high risk)"
+  [azure_devops]="either | Azure DevOps pipelines and work items"
+  [cloud_cli]="either | cloud CLIs (very high risk)"
+  [kubernetes]="key | named Kubernetes clusters (very high risk)"
   [notion]="Being | Notion integration"
+  [tunnel]="admin key at setup | Cloudflare tunnel for the box"
+  [cloudflare_api]="Owner token | whole Cloudflare account (very high risk)"
+  [app_keys]="key | single-app keys from the key folder"
+  [model_hubs]="key | model hub downloads"
+  [model_proxy]="key | local model proxy"
+  [vpn]="key | VPN to private networks"
+  [device_sync]="owner's laptop | owner device sync"
+  [desktop]="owner's laptop | <being>-desktop"
 )
 
 # ---- sign-in sessions --------------------------------------------------------
@@ -447,8 +463,8 @@ cmd_doctor() {
     if [[ -n "$(toml_file)" ]]; then
       for side in being owner; do for svc in teams outlook; do
         c="$(session_cache "$side" "$svc")"; [[ -n "$c" && -s "$c" ]] || continue
-        case "$side/$svc" in being/teams) need="teams-owner-chat" ;; being/outlook) need="being-mail" ;;
-          owner/teams) need="owner-teams-read owner-teams-send" ;; owner/outlook) need="owner-mail-read owner-mail-send" ;; esac
+        case "$side/$svc" in being/teams) need="owner_chat" ;; being/outlook) need="being_mail" ;;
+          owner/teams) need="owner_teams_read owner_teams_send" ;; owner/outlook) need="owner_mail_read owner_mail_send" ;; esac
         local hit=false n; for n in $need; do [[ "$allowed" == *" $n "* ]] && hit=true; done
         $hit && ok "$side $svc sign-in is on the access list" || bad "$side $svc is signed in but not on the [access] list ($need)"
       done; done

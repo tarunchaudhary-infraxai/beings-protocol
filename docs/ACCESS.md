@@ -53,25 +53,25 @@ choices are saved in `being.toml` under `[access]` (key in the last column), sho
 
 | ☐ | Tool | Login used | Level | Risk | Default | `[access]` key |
 |---|---|---|---|---|---|---|
-| ☐ | Teams chats with the owner | Being | Read + send | Low | **On (required)** | `teams_owner_chat` |
-| ☐ | Teams chats with teammates | Being | Read + send (own chat only) | Low | Off | `teams_teammates` |
-| ☐ | Teams group chats and channels | Being | Read + post | Medium | Off | `teams_groups_channels` |
+| ☐ | Teams chats with the owner | Being | Read + send | Low | **On (required)** | `owner_chat` |
+| ☐ | Teams chats with teammates | Being | Read + send (own chat only) | Low | Off | `teammate_chats` |
+| ☐ | Teams group chats and channels | Being | Read + post | Medium | Off | `group_chats` |
 | ☐ | Being's own mail | Being | Read + send | Medium | Off | `being_mail` |
 | ☐ | Being's own OneDrive (share files) | Being | Upload + share by name | Medium | Off | `being_onedrive` |
-| ☐ | Teams presence and photo | Being | Set status, photo | Low | Off | `being_presence` |
-| ☐ | Claude Code | Being's Claude seat | Run sessions and jobs | — | On | `claude_code` |
+| ☐ | Teams presence and photo | Being | Set status, photo | Low | Off | `presence` |
+| ☐ | Claude Code | Being's Claude seat | Run sessions and jobs | — | On | `claude` |
 | ☐ | Codex | Being's Codex login | Quick replies, fallback | — | Off | `codex` |
-| ☐ | Memory search | Local | Read + write notes | Low | On | `memory_search` |
+| ☐ | Memory search | Local | Read + write notes | Low | On | `memory` |
 | ☐ | Owner's Teams: read | Owner | Read only | Medium | Off | `owner_teams_read` |
-| ☐ | Owner's Teams: send as owner after approval | Owner | Draft → "send Dn" | High | Off | `owner_teams_send_approved` |
+| ☐ | Owner's Teams: send as owner after approval | Owner | Draft → "send Dn" | High | Off | `owner_teams_send` |
 | ☐ | Owner's mail: read | Owner | Read only | Medium | Off | `owner_mail_read` |
-| ☐ | Owner's mail: send as owner after approval | Owner | Draft → "send Dn" | High | Off | `owner_mail_send_approved` |
+| ☐ | Owner's mail: send as owner after approval | Owner | Draft → "send Dn" | High | Off | `owner_mail_send` |
 | ☐ | Owner's files (OneDrive, SharePoint) | Owner browser | Read only | Medium | Off | `owner_files` |
-| ☐ | Owner's Outlook/Teams web pages | Owner browser | Read only | Medium | Off | `owner_web_pages` |
+| ☐ | Owner's Outlook/Teams web pages | Owner browser | Read only | Medium | Off | `owner_web` |
 | ☐ | Shared mailbox: read replies | Owner | Read only | Medium | Off | `shared_mailbox_read` |
-| ☐ | Shared mailbox: drafts and reviewed batch send | Owner | Draft → go | High | Off | `shared_mailbox_drafts` |
-| ☐ | Teams channel posts as owner (name the channel) | Owner | Draft → go | High | Off | `channel_posts` |
-| ☐ | Mail forwarding rules (name sender + subject) | Owner | Pre-approved rule | High | Off | `mail_forward_rules` |
+| ☐ | Shared mailbox: drafts and reviewed batch send | Owner | Draft → go | High | Off | `shared_mailbox_send` |
+| ☐ | Teams channel posts as owner (name the channel) | Owner | Draft → go | High | Off | `owner_channel_posts` |
+| ☐ | Mail forwarding rules (name sender + subject) | Owner | Pre-approved rule | High | Off | `mail_rules` |
 | ☐ | Per-area approvers (name person + area) | — | Changes who can say "go" | High | Off | `area_approvers` |
 | ☐ | GitHub: Being's own account or repo-limited token | Being | Branches + PRs | Medium | Off | `github_being` |
 | ☐ | GitHub: owner's login | Owner | Whatever the token allows | **Very high** | Off | `github_owner` |
@@ -79,14 +79,14 @@ choices are saved in `being.toml` under `[access]` (key in the last column), sho
 | ☐ | Azure / Google Cloud CLI | Being or owner | Cloud resources | **Very high** | Off | `cloud_cli` |
 | ☐ | Kubernetes clusters (name them) | Key | Deploy, read | **Very high** | Off | `kubernetes` |
 | ☐ | Notion (name the workspace) | Being integration | Read + write pages | Medium | Off | `notion` |
-| ☐ | Cloudflare tunnel for the Being's box | Admin key (setup only) | SSH + desktop links | Medium | On if the Being has a box | `cloudflare_tunnel` |
+| ☐ | Cloudflare tunnel for the Being's box | Admin key (setup only) | SSH + desktop links | Medium | On if the Being has a box | `tunnel` |
 | ☐ | Cloudflare API on this box | Owner token | Whole account | **Very high** | Off | `cloudflare_api` |
 | ☐ | App keys (pick from `~/.config/<being>/`) | Key | Per app | Varies | Off | `app_keys` |
 | ☐ | Model hubs | Key | Download models | Low | Off | `model_hubs` |
 | ☐ | Local model proxy | Key | Shared AI access | Low | Off | `model_proxy` |
 | ☐ | VPN to company sites | Key | Private networks | High | Off | `vpn` |
-| ☐ | Owner device sync (laptop) | Owner's laptop SSH | Sync repos and notes | Medium | Off | `owner_device_sync` |
-| ☐ | `<being>-desktop` on the owner's laptop | Owner's laptop | Open the Being's desktop | Low | On if the Being has a box | `being_desktop` |
+| ☐ | Owner device sync (laptop) | Owner's laptop SSH | Sync repos and notes | Medium | Off | `device_sync` |
+| ☐ | `<being>-desktop` on the owner's laptop | Owner's laptop | Open the Being's desktop | Low | On if the Being has a box | `desktop` |
 
 **Before any owner row works:** both the Being and the owner must be signed in, each in their own separate session, for
 that service (section 5). Owner rows are switched on twice on purpose: ticked in `being.toml` (the record) and set `true`
@@ -95,9 +95,9 @@ in `ops/teams-kit/owner-access.toml` (what the scripts obey).
 ```toml
 # being.toml
 [access]
-teams_owner_chat = true      # required
-claude_code = true
-memory_search = true
+owner_chat = true      # required
+claude = true
+memory = true
 owner_files = true           # example of an owner row the owner ticked
 # every key not listed, or not true, is off
 ```
@@ -106,8 +106,21 @@ Shared mailbox and channel rows have two routes: `graph` (the owner's API sessio
 or channel scopes) and `browser` (the owner's own Outlook web or Teams web session, for tenants where an admin has not
 consented to those scopes). Set `route` in `owner-access.toml`; the guards and approvals are the same on both.
 
-`shared_mailbox_drafts` covers two switches in `owner-access.toml`: `shared_mailbox_drafts` (drafts) and
-`shared_mailbox_send` (the reviewed batch send); the owner can tick drafts and leave sending off.
+Owner rows in `being.toml` map to these switches in `owner-access.toml`:
+
+| `being.toml` `[access]` key | `owner-access.toml` switch(es) |
+|---|---|
+| `owner_teams_read` | `owner_teams_read` |
+| `owner_teams_send` | `owner_teams_send_approved` |
+| `owner_mail_read` | `owner_mail_read` |
+| `owner_mail_send` | `owner_mail_send_approved` |
+| `owner_files` | `owner_files` |
+| `owner_web` | `owner_web_pages` |
+| `shared_mailbox_read` | `shared_mailbox_read` |
+| `shared_mailbox_send` | `shared_mailbox_drafts` (drafts) and `shared_mailbox_send` (reviewed batch send); drafts can be on with sending off |
+| `owner_channel_posts` | `channel_posts` |
+| `mail_rules` | `mail_forward_rules` |
+| `area_approvers` | `area_approvers` |
 
 ## 5. Separate headless sessions (Teams and Outlook)
 

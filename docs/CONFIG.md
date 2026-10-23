@@ -108,7 +108,7 @@ between boxes.
 | Key | Session | Who signs in | Default |
 |---|---|---|---|
 | `being_teams` | Being API session, Teams scopes | Owner or admin, once, device code, as the Being | `ops/teams-kit/state/token-cache.json` |
-| `being_outlook` | Being API session, mail scopes | Same, as the Being (a separate sign-in with mail scopes; may share the Being's cache) | same file |
+| `being_outlook` | Being API session, mail scopes | Same, as the Being (a separate sign-in with mail scopes, its own file) | `ops/teams-kit/state/being-outlook-cache.json` |
 | `being_browser` | Being browser profile | The Being, once | `{config_dir}/being-browser` |
 | `owner_teams` | Owner API session, Teams scopes | **The owner**, once, device code | `""` (off) |
 | `owner_outlook` | Owner API session, mail scopes | **The owner**, once | `""` (off) |

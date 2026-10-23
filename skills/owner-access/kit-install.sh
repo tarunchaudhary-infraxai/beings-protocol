@@ -4,7 +4,8 @@
 set -euo pipefail
 SRC="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 HOME_DIR=${1:?usage: kit-install.sh <being-home> [being.toml]}
-TOML=${2:-}
+TOML=${2:-}; [[ $TOML == --name ]] && TOML=""
+[[ -n $TOML ]] || TOML=${BEING_CONFIG_FILE:-}
 KIT=${OWNER_ACCESS_KIT_DIR:-$HOME_DIR/ops/teams-kit}
 [[ -f $KIT/graph.mjs && -f $KIT/scope.mjs ]] || { echo "owner-access: Teams kit not found at $KIT (install --with teams-kit first)" >&2; exit 1; }
 
