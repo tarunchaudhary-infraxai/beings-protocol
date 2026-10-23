@@ -12,7 +12,7 @@ export const PROMPT_MARK_RE = /\bfingerprint\s+[0-9a-f]{12}\b/i;
 
 const canon = (d) => JSON.stringify({ kind: d.kind, chatId: d.chatId || '', target: d.target || '', to: d.to || [],
   cc: d.cc || [], subject: d.subject || '', replyTo: d.replyTo || '', text: d.text,
-  attach: (d.attach || []).map((a) => [a.name, a.sha256]) });
+  attach: (d.attach || []).map((a) => [a.name, a.sha256]), ...(d.as ? { as: d.as } : {}) });
 export const fingerprint = (d) => createHash('sha256').update(canon(d)).digest('hex').slice(0, 12);
 
 // Next free draft id. Each id is claimed by an exclusive create, so concurrent runs never share one.
@@ -48,7 +48,7 @@ export function renderPrompt(d, bodyHtml) {
     ? `<p><b>Draft ${d.id}</b>: email as you${d.replyTo ? ' (reply in thread)' : ''} to <b>${esc(d.to.join(', ') || 'the original sender')}</b>`
       + (d.cc.length ? ` cc ${esc(d.cc.join(', '))}` : '') + '</p>' + (d.subject ? `<p><i>Subject:</i> ${esc(d.subject)}</p>` : '')
       + (d.attach.length ? `<p><i>Attachments:</i> ${esc(d.attach.map((a) => `${a.name} (${Math.round(a.size / 1024)} KB)`).join(', '))}</p>` : '')
-    : `<p><b>Draft ${d.id}</b>: reply as you in <b>${esc(d.target)}</b></p>`;
+    : `<p><b>Draft ${d.id}</b>: reply ${d.as ? `as <b>${esc(d.as)}</b> (not you)` : 'as you'} in <b>${esc(d.target)}</b></p>`;
   return head + (d.re ? `<p><i>They wrote:</i> “${esc(d.re.slice(0, 300))}”</p>` : '') + '<hr>' + bodyHtml + '<hr>'
     + `<p>Reply <b>send ${d.id}</b> · <b>edit ${d.id} &lt;new text&gt;</b> · <b>skip ${d.id}</b>${isMail ? ` · <b>save ${d.id}</b>` : ''}`
     + ` · fingerprint ${d.fingerprint}</p>`;
@@ -91,4 +91,13 @@ export function checkPrompt({ promptMsg, beingId, draft, cmdAt }) {
   const fp = fingerprint(draft);
   if (fp !== draft.fingerprint || !t.includes(`fingerprint ${fp}`)) return 'draft changed after the owner saw it';
   return null;
+}
+
+// Recipients for a reply to the owner's own sent mail: its original To (and Cc unless the draft names one), never the
+// owner again. {} when the draft names recipients or the original came from someone else.
+export function replyRecipients(original, ownerUpn, d = {}) {
+  const from = String(original?.from?.emailAddress?.address || '').toLowerCase();
+  if (d.to?.length || !from || from !== String(ownerUpn || '').toLowerCase()) return {};
+  const to = original.toRecipients || [];
+  return to.length ? { toRecipients: to, ...(!d.cc?.length && original.ccRecipients?.length ? { ccRecipients: original.ccRecipients } : {}) } : {};
 }

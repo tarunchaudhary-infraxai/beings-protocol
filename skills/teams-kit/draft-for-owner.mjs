@@ -10,19 +10,21 @@ import { logComms } from './comms-log.mjs';
 import { toHtml } from './fmt.mjs';
 import { findSecrets, findSecretsInFiles } from './secrets.mjs';
 import { chatLabel, fingerprint, renderPrompt, allocDraftId, COMMAND_RE } from './approval.mjs';
+import { sendAsAccount } from './send-as.mjs';
 
 const SENDER = beingSender();   // the prompt is posted as the Being, never as the owner
 const args = process.argv.slice(2);
 const opt = (f) => { const i = args.indexOf(f); return i === -1 ? '' : (args[i + 1] ?? ''); };
 const isMail = args.includes('--mail');
 const chatId = opt('--chat'), to = opt('--to'), re = opt('--re'), cc = opt('--cc'), subject = opt('--subject'), replyTo = opt('--reply-to');
+const as = opt('--as').toLowerCase();   // Teams only: send from another account that granted it (send-as.mjs)
 const attach = opt('--attach').split(',').map((x) => x.trim()).filter(Boolean).map((f) => {
   if (!path.isAbsolute(f) || !existsSync(f) || statSync(f).size >= 3 * 1024 * 1024) fail(`attachment missing, relative or >= 3 MB: ${f}`, 2);
   return { path: f, name: path.basename(f), size: statSync(f).size, sha256: createHash('sha256').update(readFileSync(f)).digest('hex') };
 });
 const text = readFileSync(0, 'utf8').trim();
 if (!text || (isMail ? !(to || replyTo) || (!subject && !replyTo) : !chatId)) {
-  fail('usage: --chat <chatId> [--re <msg>] < draft.md | --mail --to a,b [--cc c] --subject S [--reply-to <id>] [--attach /abs/f] < draft.md', 2);
+  fail('usage: --chat <chatId> [--re <msg>] [--as <upn>] < draft.md | --mail --to a,b [--cc c] --subject S [--reply-to <id>] [--attach /abs/f] < draft.md', 2);
 }
 if (standby()) fail('standby host: drafts disabled', 3);
 const leaked = [...findSecrets(`${subject}\n${re}\n${text}`), ...findSecretsInFiles(attach.map((a) => a.path))];
@@ -34,7 +36,14 @@ const OWNER = need('OWNER_UPN').toLowerCase();
 // The target label comes from Graph with the owner's sign-in, never from the caller.
 let target = '';
 const kenv = kitEnv();
-if (!isMail && !ownerDelegate(kenv)) target = 'a chat not verified (no owner sign-in on this host: copy the text and send it yourself)';
+if (as) {
+  if (isMail) fail('blocked: --as is for Teams drafts only', 2);
+  const acct = sendAsAccount(as, kenv);
+  if (typeof acct === 'string') fail(`blocked: ${acct}; not staged`, 3);
+  const { g: ag, me: am } = await connect({ upn: as, cache: acct.cache, sender: true, scopes: ['Chat.ReadWrite', 'User.Read'] });
+  const chat = await ag(`/chats/${encodeURIComponent(chatId)}?$expand=members`).catch((e) => fail(`cannot resolve chat ${chatId} as ${as}: ${e.message}`));
+  target = chatLabel(chat, chat.members, { exclude: [am.id, as] });
+} else if (!isMail && !ownerDelegate(kenv)) target = 'a chat not verified (no owner sign-in on this host: copy the text and send it yourself)';
 else if (!isMail) {
   const { g: og, me: owner } = await connect({ upn: OWNER, cache: kenv.OWNER_CACHE, scopes: ['Chat.ReadWrite', 'User.Read'] });
   const chat = await og(`/chats/${encodeURIComponent(chatId)}?$expand=members`).catch((e) => fail(`cannot resolve chat ${chatId}: ${e.message}`));
@@ -49,7 +58,7 @@ mkdirSync(DIR, { recursive: true, mode: 0o700 });
 const id = allocDraftId(DIR);
 const list = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
 const draft = isMail ? { id, kind: 'mail', to: list(to), cc: list(cc), subject, replyTo, re, text, attach }
-  : { id, kind: 'teams', chatId, target, re, text };
+  : { id, kind: 'teams', chatId, target, re, text, ...(as ? { as } : {}) };
 draft.fingerprint = fingerprint(draft);
 const file = path.join(DIR, `${id}.json`);
 const store = (extra) => writeFileSync(file, JSON.stringify({ ...draft, status: 'pending', created: new Date().toISOString(), ...extra }, null, 2), { mode: 0o600 });

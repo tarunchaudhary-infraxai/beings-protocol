@@ -56,3 +56,27 @@ test('plain links without parentheses are unchanged', () => {
   const h = toHtml(`[PR](https://github.com/o/r/pull/1)`);
   assert.ok(h.includes('<a href="https://github.com/o/r/pull/1">PR</a>'), h);
 });
+
+test('htmlToText keeps the sender\'s layout: one line per <br>, a blank line between paragraphs, list bullets', async () => {
+  const { htmlToText } = await import('./fmt.mjs');
+  assert.equal(htmlToText('<p>Line one<br>\nLine two</p>\n<p>Next &amp; last</p>'), 'Line one\nLine two\n\nNext & last');
+  assert.equal(htmlToText('<ul><li>a</li><li>b</li></ul>'), '• a\n• b');
+  assert.equal(htmlToText('<p>see <img src="x"> &lt;here&gt;</p>'), 'see [image] <here>');
+  assert.equal(htmlToText(null), '');
+});
+
+test('inlineImages lists hosted image URLs only', async () => {
+  const { inlineImages } = await import('./fmt.mjs');
+  const u = 'https://graph.microsoft.com/v1.0/chats/c/messages/1/hostedContents/aW1n/$value';
+  assert.deepEqual(inlineImages(`<p><img src="${u}" width="9"><img src="https://example.com/x.png"></p>`), [u]);
+  assert.deepEqual(inlineImages(''), []);
+});
+
+test('formatReactions names each reactor (roster fallback) with the time', async () => {
+  const { formatReactions } = await import('./fmt.mjs');
+  const rx = [{ reactionType: 'like', createdDateTime: '2026-01-02T09:14:33Z', user: { user: { id: 'u1', displayName: null } } },
+    { reactionType: 'heart', displayName: '❤️', createdDateTime: '2026-01-02T09:20:00Z', user: { user: { id: 'u2', displayName: 'Sam' } } },
+    { reactionType: 'laugh', user: { user: { id: 'abcdef123456' } } }];
+  assert.equal(formatReactions(rx, new Map([['u1', 'Kim']])), '👍 Kim 09:14Z · ❤️ Sam 09:20Z · 😆 abcdef12');
+  assert.equal(formatReactions(undefined), '');
+});

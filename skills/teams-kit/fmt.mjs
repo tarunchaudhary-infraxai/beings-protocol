@@ -57,3 +57,27 @@ const BLOCK = /<(p|ul|ol|br|div|table|blockquote|hr|attachment)\b[^>]*>/i;
 export const ensureHtml = (text) => BLOCK.test(text)
   ? text.replace(new RegExp(String.raw`\[([^\]]+)\]\((${URL_RE})\)`, 'g'), (_, t, u) => `<a href="${href(u)}">${t}</a>`).replace(/\*\*([^*<]+)\*\*/g, '<b>$1</b>')
   : toHtml(text);
+
+// Teams HTML → plain text that keeps the layout: Graph stores "<br>\n", so the newline after a tag is dropped with it.
+const ENT = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", apos: "'" };
+export const htmlToText = (h) => String(h || '')
+  .replace(/<(style|script)[\s\S]*?<\/\1>/gi, '')
+  .replace(/<br\s*\/?>\r?\n?/gi, '\n')
+  .replace(/<li\b[^>]*>/gi, '• ').replace(/<\/li>\r?\n?/gi, '\n')
+  .replace(/<\/(p|div|ul|ol|h[1-6]|blockquote|tr)>\r?\n?/gi, '\n\n')
+  .replace(/<img\b[^>]*>/gi, '[image]')
+  .replace(/<[^>]+>/g, '')
+  .replace(/&(nbsp|amp|lt|gt|quot|#39|apos);/g, (_, e) => ENT[e])
+  .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+
+// Inline images in a message body (Graph hostedContents URLs), for teams-fetch-attachment.mjs.
+export const inlineImages = (h) => [...String(h || '').matchAll(/<img\b[^>]*\bsrc="([^"]*hostedContents[^"]*)"/gi)].map((m) => m[1].replace(/&amp;/g, '&'));
+
+// "👍 Kim 09:14Z · ❤️ Sam 09:20Z": who reacted and when; names from the reaction, else from the chat roster (id → name).
+const EMO = { like: '👍', heart: '❤️', laugh: '😆', surprised: '😮', sad: '😢', angry: '😡' };
+export const formatReactions = (reactions, names = new Map()) => (reactions || []).map((r) => {
+  const id = r.user?.user?.id;
+  const who = r.user?.user?.displayName || names.get(id) || (id ? id.slice(0, 8) : 'someone');
+  const at = String(r.createdDateTime || '').slice(11, 16);
+  return [r.displayName || EMO[r.reactionType] || r.reactionType, who, at && `${at}Z`].filter(Boolean).join(' ');
+}).join(' · ');

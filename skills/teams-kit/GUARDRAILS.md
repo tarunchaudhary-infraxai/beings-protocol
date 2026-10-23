@@ -39,8 +39,9 @@ work rules tell every session to use `being-steer`, and teammate runs refuse `Se
 **Teammate memory fence.** Private memory is never used, quoted or used as the basis of an inference for anyone but the
 owner ("they've had a lot on" is a leak). Teammate runs and the jobs they start run with Claude Code auto memory off and the
 `team-fence.py` PreToolUse hook, which refuses `.beings-local/`, credential stores (`~/.config`, `~/.ssh`, ...), reading any
-`.env`, other sessions (`~/.claude/projects`, `~/.codex`), kit `state/` except the lane's own jobs, and the owner tools;
-`BEING_FENCE_DENY` adds paths. Teammates get answers, lookups and reviews; anything with a side effect outside their chat
+`.env`, other sessions (`~/.claude/projects`, `~/.codex`, `.beings/sessions/`), kit `state/` and logs except the lane's
+own jobs, the owner tools and owner-access tools, the owner's browser profile (`BEING_OWNER_BROWSER_DIR`) and Cloudflare
+token folders and env files; `BEING_FENCE_DENY` adds paths. Teammates get answers, lookups and reviews; anything with a side effect outside their chat
 needs the owner's OK first.
 
 The scope is not an environment variable the run can edit. The handler mints an opaque per-run grant (`scope.mjs`), stores
@@ -79,6 +80,11 @@ disk, never from the run's environment. Whoever can read that key can mint any s
 | Attachments are fetched only from Microsoft Graph / SharePoint hosts; unshared files exit 3 | `teams-fetch-attachment.mjs` |
 | Codex jobs have no network unless started with `--network` | `being-job` |
 | Sending as the owner: see below | `draft-for-owner.mjs`, `approve.mjs` |
+| Sending as another account that granted it: off unless `BEING_ALLOW_SEND_AS=1`, listed accounts only (never the owner), own 0600 cache, owner-approved draft whose fingerprint names the account, used once within 10 min, `state/send-as.stop` pauses | `send-as.mjs`, `draft-for-owner.mjs --as`, `approve.mjs`, `teams-send-dm.mjs --as` |
+| Channel posts off unless `BEING_CHANNEL_POST=1`, full grant only; group chats only under a full grant | `teams-channel.mjs`, `teams-send-dm.mjs --group` |
+| OneDrive: sign-in sharing only, never "anyone" links; scoped runs share only with the owner and their chats' members; drive admin is owner-lane only; anyone-links found and stripped by a sweep | `share-file.mjs`, `onedrive.mjs`, `link-guard.mjs` |
+| Shared mailboxes read-only, owner lane, listed in `BEING_SHARED_MAILBOXES` | `mail.mjs --mailbox` |
+| Deletes only the Being's own messages | `teams-delete-msg.mjs` |
 | Voice pass may not drop a number, link, negation or condition (falls back to the original text) | `being-handle voice_lane` |
 | Failed work kept for retry, never dropped | `state/failed.jsonl` |
 | Standby host never sends | `state/STANDBY` |

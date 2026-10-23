@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Read Teams as the Being (or as the owner, via owner-read). Never sends.
 // Usage: README.md "Script reference".
-import { connect, need, fail, strip } from './graph.mjs';
+import { connect, need, fail } from './graph.mjs';
+import { htmlToText, inlineImages, formatReactions } from './fmt.mjs';
 
 const args = process.argv.slice(2);
 const take = (f) => { const i = args.indexOf(f); if (i === -1) return null; const v = args[i + 1] || ''; args.splice(i, 2); return v; };
@@ -53,15 +54,21 @@ if (SINCE) {
     url = page['@odata.nextLink'] || null;
   }
   if (!found) fail(`anchor ${SINCE} not found in ${all.length} messages`, 2);
+  console.error(`${all.length} message(s) after ${SINCE}`);
 } else {
   all = (await g(`/chats/${chatId}/messages?$top=${TOP}`)).value;
 }
-const EMO = { like: '👍', heart: '❤️', laugh: '😆', surprised: '😮', sad: '😢', angry: '😡' };
+// Reactions carry only a user id in most tenants: names come from the chat roster, read once and only when needed.
+let names = new Map();
+if (all.some((m) => (m.reactions || []).some((r) => !r.user?.user?.displayName))) {
+  try { names = new Map(((await g(`/chats/${chatId}/members`)).value || []).filter((x) => x.userId).map((x) => [x.userId, x.displayName || x.email || x.userId.slice(0, 8)])); } catch {}
+}
 for (const m of all.slice().reverse()) {
-  const body = strip(m.body?.content);
+  const body = htmlToText(m.body?.content);
   if (!body && m.messageType !== 'message') continue;
   const who = m.from?.user?.displayName || m.from?.application?.displayName || '(system)';
-  const rx = (m.reactions || []).map((r) => `${r.displayName || EMO[r.reactionType] || r.reactionType} ${r.user?.user?.displayName || ''}`.trim()).join(' · ');
+  const rx = formatReactions(m.reactions, names);
   console.log(`\n--- ${m.createdDateTime}  ${who}  [${m.id}]${rx ? `  reactions: ${rx}` : ''}\n${body}`);
   for (const a of m.attachments ?? []) if (a.contentType === 'reference' && a.contentUrl) console.log(`    [file] ${a.name ?? '(unnamed)'}  ${a.contentUrl}`);
+  for (const src of inlineImages(m.body?.content)) console.log(`    [image] ${src}`);
 }

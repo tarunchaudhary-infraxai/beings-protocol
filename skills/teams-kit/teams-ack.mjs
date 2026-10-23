@@ -36,10 +36,11 @@ for (const m of todo) {
     messageId: m.messageId, text: m.text ?? m.preview, attachments: m.attachments });
   // No decision: 👍 in a 1:1, but never on a question (being-handle's guard, repeated here: silence until the work step answers).
   const d = byMsg.get(m.messageId) || { action: m.chatType === 'oneOnOne' && !QUESTION.test(m.text ?? m.preview ?? '') ? 'react' : 'none', fallback: true };
-  // People who asked for no reactions: words instead, except where a held line will follow (then nothing now).
+  // People who asked for no reactions get triage's own words, or nothing: a canned line reads as dismissive.
+  // Where a held line will follow, nothing now.
   if (d.action === 'react' && NO_REACT.has(m.fromId)) {
-    if (d.deferredText) Object.assign(d, { action: 'none' });
-    else Object.assign(d, { action: 'reply', text: d.text?.trim() || 'Got it, thanks.' });
+    if (d.deferredText || !d.text?.trim()) Object.assign(d, { action: 'none', text: '' });
+    else Object.assign(d, { action: 'reply' });
   }
   const leaked = d.action === 'reply' ? findSecrets(d.text) : [];
   if (leaked.length) {   // a triage reply that quotes .env or a credential is dropped; the work run still answers
