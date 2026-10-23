@@ -21,7 +21,15 @@ if (prompt.includes('TAMPER') && res) {
   const jf = res.replace(/\\.result\\.md$/, '.json'); const d = JSON.parse(fs.readFileSync(jf, 'utf8'));
   d.scope = 'full'; d.notify = '19:owner-chat'; fs.writeFileSync(jf, JSON.stringify(d));
 }
+if (prompt.includes('LIMIT')) { console.log("You've hit your usage limit · resets 5pm"); process.exit(1); }
 if (res) fs.writeFileSync(res, 'done');
+`;
+// Fake codex: records its args, names a thread and writes the -o result file.
+const FAKE_CODEX = `#!/usr/bin/env node
+const fs = require('fs'); const a = process.argv.slice(2);
+fs.appendFileSync(process.env.HOME + '/codex.calls', JSON.stringify(a) + '\\n');
+const o = a.indexOf('-o'); if (o >= 0) fs.writeFileSync(a[o + 1], 'codex did it');
+console.log(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1234' }));
 `;
 
 function kit(t) {
@@ -32,6 +40,8 @@ function kit(t) {
   for (const f of ['being-job', 'scope.mjs', 'kit-env.mjs', 'team-fence.py']) copyFileSync(path.join(KIT, f), path.join(k, f));
   chmodSync(path.join(k, 'being-job'), 0o755);
   writeFileSync(path.join(bin, 'claude'), FAKE); chmodSync(path.join(bin, 'claude'), 0o755);
+  writeFileSync(path.join(bin, 'codex'), FAKE_CODEX); chmodSync(path.join(bin, 'codex'), 0o755);
+  mkdirSync(path.join(dir, 'home', '.codex'), { recursive: true });
   writeFileSync(path.join(k, '.env'), `BEING_NAME=Testbeing\nBEING_STATE_DIR=${st}\nBEING_WORKSPACE=${path.join(dir, 'ws')}\nBEING_SINGLE_USER_ACK=1\n`);
   const host = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(BEING_|OWNER_|M365_|HOOK_)/.test(key)));
   const env = { ...host, PATH: `${bin}:${process.env.PATH}`, HOME: path.join(dir, 'home'), BEING_STATE_DIR: st };
@@ -39,7 +49,8 @@ function kit(t) {
   const job = (scope, args) => spawnSync(path.join(k, 'being-job'), args, { env: { ...env, BEING_SEND_TOKEN: scope ? mint(scope) : '' }, encoding: 'utf8' });
   const work = () => (existsSync(path.join(st, 'work.jsonl')) ? readFileSync(path.join(st, 'work.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
   const until = async (f, ms = 15000) => { for (let i = 0; i < ms / 100 && !f(); i++) await sleep(100); return f(); };
-  return { dir, k, st, env, job, work, until };
+  const rec = (id) => JSON.parse(readFileSync(path.join(st, 'jobs', id + '.json'), 'utf8'));
+  return { dir, k, st, env, job, work, until, rec };
 }
 
 test('#4: being-job run and codex --network are refused without the full scope; allowed with it', async (t) => {
@@ -138,4 +149,58 @@ test('a teammate job refused because team-sync failed revokes its grant (no live
   assert.ok(await until(() => JSON.parse(readFileSync(jf, 'utf8')).status !== 'running'), 'job settled');
   assert.equal(JSON.parse(readFileSync(jf, 'utf8')).status, 'refused-team-sync');
   assert.equal(grants().length, before, 'the job grant is revoked');
+});
+
+test('Claude usage limit: an owner-lane agent job continues as a Codex job; only the Codex job reports', async (t) => {
+  const { dir, st, job, work, until, rec } = kit(t);
+  const r = job('full', ['agent', 'limited', '--notify', '19:owner-chat', 'LIMIT task text']);
+  assert.equal(r.status, 0, r.stderr);
+  const id = r.stdout.trim();
+  assert.ok(await until(() => work().length === 1), 'one completion event');
+  const first = rec(id);
+  assert.equal(first.status, 'limit-fallback');
+  const fb = rec(first.fallback_job);
+  assert.equal(fb.kind, 'codex'); assert.equal(fb.fallback_from, id); assert.equal(fb.status, 'done');
+  assert.deepEqual(fb.payload, ['LIMIT task text']);
+  assert.equal(fb.network, true);   // the full scope keeps the network a Claude job had
+  assert.equal(work()[0].jobId, fb.id); assert.equal(work()[0].chatId, '19:owner-chat');
+  assert.match(readFileSync(path.join(st, 'jobs', id + '.result.md'), 'utf8'), /continued as Codex job/);
+  assert.match(readFileSync(path.join(dir, 'home', '.codex', 'session_index.jsonl'), 'utf8'), /"thread_name": "\d{4}-\d\d-\d\d job-/);
+});
+
+test('Claude usage limit: a teammate-lane job never falls back to Codex (fence is Claude-only); off switch works', async (t) => {
+  const { dir, st, job, work, until, rec } = kit(t);
+  const r = job('chats:19:team', ['agent', 'tl', '--notify', '19:team', 'LIMIT task']);
+  const id = r.stdout.trim();
+  assert.ok(await until(() => work().length === 1));
+  assert.equal(rec(id).status, 'failed'); assert.equal(rec(id).fallback_job, undefined);
+  assert.match(readFileSync(path.join(st, 'jobs', id + '.log'), 'utf8'), /teammate lane/);
+  assert.ok(!existsSync(path.join(dir, 'home', 'codex.calls')));
+  writeFileSync(path.join(path.dirname(st), 'kit', '.env'), readFileSync(path.join(path.dirname(st), 'kit', '.env'), 'utf8') + 'BEING_WORK_FALLBACK=off\n');
+  const o = job('full', ['agent', 'off', '--notify', '19:owner-chat', 'LIMIT task']);
+  assert.ok(await until(() => work().length === 2));
+  assert.equal(rec(o.stdout.trim()).status, 'failed');
+  assert.ok(!existsSync(path.join(dir, 'home', 'codex.calls')));
+});
+
+test('stop: marks the job stopped first, kills its process group, revokes its grant, sends no completion event', async (t) => {
+  const { dir, k, st, env, job, work, until, rec } = kit(t);
+  const marker = path.join(dir, 'child.pid');
+  const r = job('full', ['run', 'long', '--notify', '19:owner-chat', '--', 'sh', '-c', `echo $$ > ${marker}; sleep 60`]);
+  const id = r.stdout.trim();
+  assert.ok(await until(() => existsSync(marker) && existsSync(path.join(st, 'jobs', id + '.grant'))), 'job running');
+  const pid = Number(readFileSync(marker, 'utf8'));
+  const grant = readFileSync(path.join(st, 'jobs', id + '.grant'), 'utf8').trim();
+  assert.ok(existsSync(path.join(st, 'grants', grant + '.json')));
+  // A teammate run may not stop an owner job.
+  const tok = spawnSync('node', [path.join(k, 'scope.mjs'), 'mint', 'chats:19:team'], { env, encoding: 'utf8' }).stdout.trim();
+  const no = spawnSync(path.join(k, 'being-job'), ['stop', id], { env: { ...env, BEING_SEND_TOKEN: tok }, encoding: 'utf8' });
+  assert.equal(no.status, 3);
+  const s = spawnSync(path.join(k, 'being-job'), ['stop', id, 'superseded'], { env, encoding: 'utf8' });
+  assert.equal(s.status, 0, s.stderr); assert.match(s.stdout, /stopped/);
+  assert.ok(await until(() => { try { process.kill(pid, 0); return false; } catch { return true; } }), 'child killed');
+  assert.equal(rec(id).status, 'stopped'); assert.equal(rec(id).reason, 'superseded');
+  assert.ok(!existsSync(path.join(st, 'grants', grant + '.json')), 'grant revoked');
+  await sleep(500); assert.equal(work().length, 0);
+  assert.match(spawnSync(path.join(k, 'being-job'), ['stop', id], { env, encoding: 'utf8' }).stdout, /not running: stopped/);
 });
