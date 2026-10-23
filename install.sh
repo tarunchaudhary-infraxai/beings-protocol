@@ -53,7 +53,7 @@
 
 set -euo pipefail
 
-PROTOCOL_VERSION="0.3.0"
+PROTOCOL_VERSION="0.4.0"
 UPDATE_MODE=false
 GLOBAL_MODE=false
 BEING_NAME=""
@@ -1024,7 +1024,7 @@ EOF
 # Operations Kit (opt-in: --with operations,teams-kit)
 # Additive only: missing files are added, existing ones are never overwritten.
 # ============================================================
-KIT_VERSION="0.1.0"
+KIT_VERSION="0.2.0"
 KIT_TEMPLATES=(GUARDRAILS.md AUTONOMY-MATRIX.md JOB-CHECKLIST.md facts/_TEMPLATE.md)
 # Listed explicitly so a curl install can fetch them; tests/install-kit.test.sh keeps these in sync with git.
 TEAMS_KIT_FILES=(

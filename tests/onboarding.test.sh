@@ -160,7 +160,7 @@ PATH="$rpath" REAP_GRACE=0 "$RS" reap >/dev/null; [[ -e "$TMP/terminated" ]] && 
 echo "[harden-box]"
 printf '[being]\nname = "nova"\nlinux_user = "%s"\n[box]\noffice_subnet = "192.0.2.0/24"\n' "$(id -un)" >"$TMP/h.toml"
 "$REPO/scripts/harden-box.sh" --config "$TMP/h.toml" --desktop --dry-run >"$TMP/out" 2>&1 \
-  && grep -q 'ufw allow from 192.0.2.0/24 to any port 22 proto tcp' "$TMP/out" && grep -q 'port 3389' "$TMP/out" \
+  && grep -qE 'ufw allow from 192.0.2.0/24 to any port 22 proto tcp|allow tcp 22 and 3389 from 192.0.2.0/24' "$TMP/out" && grep -qE 'port 3389|22 and 3389' "$TMP/out" \
   && grep -q 'PasswordAuthentication no' "$TMP/out" && grep -q 'enable-linger' "$TMP/out" && grep -q 'nothing changed' "$TMP/out" \
   && ok "dry run plans ssh, firewall, linger, desktop" || bad "harden dry run: $(tail -5 "$TMP/out")"
 "$REPO/scripts/harden-box.sh" --config "$TMP/h.toml" --dry-run | grep -q 'port 3389' && bad "RDP opened without --desktop" || ok "no RDP rule without --desktop"

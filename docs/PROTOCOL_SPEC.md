@@ -1,4 +1,4 @@
-# Beings Protocol Specification v0.3.0
+# Beings Protocol Specification v0.4.0
 
 ## 1. Overview
 
@@ -468,10 +468,17 @@ Current version: **0.2.1**
 
 ### Changelog
 
-**Unreleased**
-- **Operations Kit** (optional): `GUARDRAILS.md`, `AUTONOMY-MATRIX.md`, `JOB-CHECKLIST.md` and one-fact memory templates; multi-client launcher; model-routing guide; "corrections become rules" and "fix the mechanism" patterns (CI cancel guard, daily batch branch).
-- **Teams kit skill** (`skills/teams-kit/`): Graph-polling watcher, triage → work → voice handler with one session per day per client and lane (owner, each teammate chat), lanes with enforced send scopes, background jobs with verification, blocker, watchdog, owner-approved drafts, read-only owner views, mail and presence. Configured entirely by `.env`.
-- **`install.sh`**: opt-in `--with operations|teams-kit` (with `--global` or `--update`), `--owner`, `--check`; `--name` names the Being on `--update --with`. Without `--with`, behaviour is unchanged. `BEINGS_BASE_URL` points a curl install at a fork or branch.
+**v0.4.0 — 2026-10-23** (Operations Kit v0.2.0)
+- **Operations Kit** (optional): `GUARDRAILS.md`, `AUTONOMY-MATRIX.md`, `JOB-CHECKLIST.md` and one-fact memory templates; multi-client launcher; model-routing guide; "corrections become rules" and "fix the mechanism" patterns.
+- **Teams kit skill** (`skills/teams-kit/`): Graph-polling watcher, triage → work → voice handler with per-lane sessions (owner, each teammate chat, delegate, jobs), signed send grants, fail-closed teammate fence, optional OS isolation (`off | bwrap | users`), group routing, background jobs with verification, blocker, watchdog, owner-approved drafts, read-only owner views, mail and presence.
+- **Runtime:** Codex fallback when Claude hits its usage limit (owner lane); `being-job stop`; linger, late-mount and clock waits in the runner; watchdog ignores queued jobs and shows the last action; richer `being-status`; job list in triage; named Codex threads; optional quiet mode and owner-alias chats.
+- **Messaging and files:** images, group chats, pinning and code redaction in `teams-send-dm`; send-as with an approved draft (off by default); replies to the owner's sent mail go to the original recipients; 150 MB mail attachments; read-only shared mailboxes; channel posts; delete own messages; profile photo; OneDrive sharing and anyone-link sweep; optional docs index and workbook sync; Cloudflare token detection; public-push secret gate.
+- **Operations:** nightly memory backup with reboot catch-up; session registry tripwire; auto-memory as an official layer (Codex can read it; index size check); index watcher as a service; guardrails installed into Claude Code and Codex global files; one startup order; secrets in `~/.config/<being>/`; `--track-private`; launcher `monitor`, `access`, `login`, `stacks`, `stack new`, `doctor`; app runner template (never at boot); unit and job templates.
+- **Owner access** (`--with owner-access`, every ability off by default): owner sign-in by scope, owner browser session (read only), shared mailbox drafts and inbox monitor, channel posts as the owner, mail forwarding rules, per-area approvers, doctor checks.
+- **Separate sessions:** the Being and the owner each sign in, in separate headless sessions, for Teams and for Outlook (API token cache and browser profile each); every action checks who-am-I; owner access stays off until both are signed in (see Appendix).
+- **Onboarding:** `being.toml` (one config file per Being, with the setup menu in `[access]` and `[sessions]`); `install.sh --config` and generic `--with <component>`; standalone job runner; session, poller and heartbeat units; Graph webhook; `being-tunnel` (one Cloudflare tunnel per Being box, Access first, token never shown); `<being>-desktop`; `harden-box.sh`, `repair.sh`, `verify.sh`, `offboard.sh`; `docs/PROVISIONING.md`, `docs/ACCESS.md`, `docs/CONFIG.md`.
+- **Fleet:** `being monitor`; model-limit handling in `MODEL_ROUTING.md`; recipes (two boxes one Being, model proxy, owner device sync, boot guard, tester link, project service unit); fleet UI design; `docs/ROADMAP-v0.2.md`.
+- **`install.sh`**: `--with`, `--owner`, `--check`, `--config`; `--name` names the Being on `--update --with`. Without `--with`, behaviour is unchanged. `BEINGS_BASE_URL` points a curl install at a fork or branch.
 
 **v0.3.0 — 2026-04-27**
 - **Global Being mode** (`--global --name <name>`): births a standalone Being at `~/beings/<name>/` with its own git repo, CLAUDE.md (session startup style), memory, and hooks. Not tied to a code repository.

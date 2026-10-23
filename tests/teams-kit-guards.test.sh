@@ -91,15 +91,17 @@ if [[ $(id -u) != 0 ]]; then
   chmod 600 "$ST/handler.key"
 fi
 mkdir -p "$TMP/evil"; evil=$(BEING_STATE_DIR="$TMP/evil" node --input-type=module -e "import { mintGrant } from '$KIT/scope.mjs'; console.log(mintGrant('full', { state: '$TMP/evil' }))")
-[[ $(BEING_STATE_DIR="$TMP/evil" BEING_SEND_TOKEN="$evil" node "$KIT/scope.mjs" show) == owner-only ]] && ok "grant minted in a foreign state dir is ignored" || bad "foreign state dir honoured"
+[[ $(BEING_STATE_DIR="$TMP/evil" BEING_SEND_TOKEN="$evil" node "$KIT/scope.mjs" show 2>/dev/null) == none ]] && ok "grant minted in a foreign state dir is refused" || bad "foreign state dir honoured"
 th=$(printf '%s' forged | sha256sum | cut -c1-64); printf '{"scope":"full","expires":%s}' "$(( $(date +%s) * 1000 + 3600000 ))" >"$ST/grants/$th.json"
-[[ $(BEING_SEND_TOKEN=forged node "$KIT/scope.mjs" show) == owner-only ]] && ok "unsigned grant file is owner-only" || bad "unsigned grant honoured"
+[[ $(BEING_SEND_TOKEN=forged node "$KIT/scope.mjs" show 2>/dev/null) == none ]] && ok "unsigned grant file is refused" || bad "unsigned grant honoured"
 
 # 5. Teammate work: one run per chat, each scoped to that chat only.
 rm -f "$TMP/claude.calls"
 for m in "19:chatA|a1|kim" "19:chatB|b1|lee" "19:chatA|a2|kim"; do IFS='|' read -r c id who <<<"$m"
   printf '{"chatId":"%s","messageId":"%s","fromId":"%s","chatType":"oneOnOne","text":"hi from %s"}\n' "$c" "$id" "$who" "$who" >>"$ST/work.jsonl"; done
 "$KIT/being-handle" work
+# Lane runs start in the background: wait for both (bounded).
+for _ in $(seq 1 100); do [[ $(grep -c '^== claude' "$TMP/claude.calls" 2>/dev/null || true) -ge 2 ]] && break; sleep 0.2; done; sleep 0.5
 runs=$(grep -c '^== claude' "$TMP/claude.calls" || true)
 scopes=$(grep '^== claude' "$TMP/claude.calls" | sed 's/.*scope=//' | sort | tr '\n' ' ')
 [[ $runs == 2 && "$scopes" == "chats:19:chatA chats:19:chatB " ]] && ok "one work run per teammate chat, scope = that chat" || bad "team runs=$runs scopes=[$scopes]"
@@ -113,6 +115,7 @@ PY
 
 # 6. Fast client (triage/voice) gets no file tools and runs outside the workspace.
 rm -f "$TMP/claude.calls"; "$KIT/being-handle" warm
+for _ in $(seq 1 50); do grep -q '^\[--tools\]$' "$TMP/claude.calls" 2>/dev/null && break; sleep 0.2; done
 grep -q '^\[--tools\]$' "$TMP/claude.calls" && grep -A1 '^\[--tools\]$' "$TMP/claude.calls" | grep -q '^\[\]$' && ! grep -q 'allowedTools' "$TMP/claude.calls" \
   && grep -q "pwd=$ST/fast-cwd" "$TMP/claude.calls" && ok "claude fast client: --tools \"\", empty cwd" || bad "claude fast client: $(head -c 300 "$TMP/claude.calls")"
 rm -rf "$ST/fast-daily"; sed -i.bak 's/^BEING_FAST_CLIENT=claude/BEING_FAST_CLIENT=codex/' "$KIT/.env"; rm -f "$KIT/.env.bak"

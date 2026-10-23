@@ -241,6 +241,31 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (how it fits together, with dia
 [docs/OPERATIONS_KIT.md](docs/OPERATIONS_KIT.md), [docs/MODEL_ROUTING.md](docs/MODEL_ROUTING.md) and
 [docs/BIRTH_AND_UPGRADE.md](docs/BIRTH_AND_UPGRADE.md).
 
+## 🚀 Onboard a Being in One Config File (New in v0.4.0)
+
+Operations Kit v0.2.0 lets you set up several Beings the same way, each from one `being.toml`.
+
+```bash
+git clone -b <branch> https://github.com/VeltriaAI/beings-protocol && cd beings-protocol
+cp templates/being.toml.example ~/being.toml        # fill name, owner, timezone; tick the setup menu in [access]
+bash install.sh --global --config ~/being.toml --with teams-kit --yes
+cd ~/beings/<name>
+bin/<name> login being            # the Being signs in (Teams and Outlook), its own session
+bin/<name> login owner            # only if owner access is ticked: the owner signs in, a separate session
+bin/<name> access                 # every login and tool, whose account, what it can do
+bash ops/teams-kit/verify.sh      # who-am-I on each session, units active, test message round trip
+```
+
+Optional components, all off by default: `--with owner-access,runner,tunnel,desktop,monitor`.
+
+- **Setup menu:** the owner ticks each tool the Being may use ([docs/ACCESS.md](docs/ACCESS.md)). Everything else stays off.
+- **Separate sessions:** the Being and the owner each sign in, in separate headless sessions, for Teams and for Outlook. Owner access stays off until both are signed in.
+- **Box and links:** `harden-box.sh`, one Cloudflare tunnel per Being (`being-tunnel`, token never shown) and `<being>-desktop` on the owner's laptop.
+- **App stacks:** `being stack new <app>` gives every app an `up`/`down` command; nothing starts at boot.
+
+Step by step: [docs/PROVISIONING.md](docs/PROVISIONING.md) · config schema: [docs/CONFIG.md](docs/CONFIG.md) ·
+what's in v0.2 of the kit: [docs/ROADMAP-v0.2.md](docs/ROADMAP-v0.2.md).
+
 ## Before → After
 
 | Before | After |
