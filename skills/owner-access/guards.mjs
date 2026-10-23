@@ -20,9 +20,11 @@ export function browserRequestAllowed(method, url, body = '') {
   return !MUTATE.test(url) && !MUTATE.test(String(body).slice(0, 20000));
 }
 
-const GRAPH = 'https://graph.microsoft.com/v1.0';
+export const GRAPH = 'https://graph.microsoft.com/v1.0';
+// Outlook REST, used by the browser route with the owner's Outlook web token.
+export const OUTLOOK_API = 'https://outlook.office.com/api/v2.0';
 const lc = (s) => String(s).toLowerCase();
-const parse = (url) => { const u = new URL(url); return { u, path: decodeURIComponent(u.pathname).replace(/^\/v1\.0/, '').toLowerCase() }; };
+const parse = (url, base = GRAPH) => { const u = new URL(url); return { u, path: decodeURIComponent(u.pathname).slice(new URL(base).pathname.length).toLowerCase() }; };
 
 // Read-only shared mailbox: GET of the listed folders' message lists (and their paging links) only.
 export function inboxReadRoute(mailbox, url, method, folders = ['inbox', 'junkemail']) {
@@ -33,9 +35,9 @@ export function inboxReadRoute(mailbox, url, method, folders = ['inbox', 'junkem
 
 // Shared-mailbox drafts: read the Drafts folder, create a draft, edit or attach to the Being's own draft ids, read Sent
 // Items in send mode, and send only the ids of an approved batch. Anything else (delete, move, reply-all) is refused.
-export function draftsRoute(mailbox, url, method, { own = new Set(), sendIds = new Set(), sentItems = false } = {}) {
-  if (!url.startsWith(GRAPH)) return false;
-  const { u, path } = parse(url), root = `/users/${lc(mailbox)}`;
+export function draftsRoute(mailbox, url, method, { own = new Set(), sendIds = new Set(), sentItems = false, base = GRAPH } = {}) {
+  if (!url.startsWith(`${base}/`)) return false;
+  const { u, path } = parse(url, base), root = `/users/${lc(mailbox)}`;
   const ids = (set) => new Set([...set].map(lc));
   const msg = (p) => { const m = new RegExp(`^${root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/messages/([^/]+)(/.*)?$`).exec(p); return m ? [m[1], m[2] || ''] : null; };
   const hit = msg(path);
@@ -43,6 +45,7 @@ export function draftsRoute(mailbox, url, method, { own = new Set(), sendIds = n
   if (/\/(send|sendmail|reply|replyall|forward|move|copy)$/.test(path)) return false;
   if (method === 'GET') {
     if (path === `${root}/mailfolders/drafts` || path === `${root}/mailfolders/drafts/messages`) return true;
+    if (base === OUTLOOK_API && path === '/me') return true;   // who-am-I for the browser route's token
     if (sentItems && path === `${root}/mailfolders/sentitems/messages`) return true;
     return !!hit && ids(own).has(hit[0]) && ['', '/attachments'].includes(hit[1]);
   }
@@ -80,10 +83,10 @@ export function forwardRoute(url, method, { readIds = new Set(), forwardId = nul
 }
 
 // Graph calls through a route guard; refused routes never reach the network.
-export function guardedGraph(token, allow, fetcher = fetch) {
+export function guardedGraph(token, allow, fetcher = fetch, base = GRAPH) {
   return async (url, { method = 'GET', body, headers = {}, raw = false, allow404 = false } = {}) => {
-    const full = url.startsWith('https://') ? url : `${GRAPH}${url}`;
-    if (!allow(full, method)) throw new Error(`refused: ${method} ${full.replace(GRAPH, '').split('?')[0]} is outside this tool's allowlist`);
+    const full = url.startsWith('https://') ? url : `${base}${url}`;
+    if (!allow(full, method)) throw new Error(`refused: ${method} ${full.replace(base, '').split('?')[0]} is outside this tool's allowlist`);
     const isBuf = Buffer.isBuffer(body);
     const r = await fetcher(full, { method, redirect: 'error', headers: { Authorization: `Bearer ${token}`,
       ...(body !== undefined && { 'Content-Type': isBuf ? 'application/octet-stream' : 'application/json' }), ...headers },
@@ -91,7 +94,39 @@ export function guardedGraph(token, allow, fetcher = fetch) {
     if (allow404 && r.status === 404) return null;
     if (raw) { if (!r.ok) throw new Error(`${r.status} ${method} ${full.slice(0, 90)}`); return r; }
     const t = await r.text();
-    if (!r.ok) throw new Error(`${r.status} ${method} ${full.replace(GRAPH, '').slice(0, 90)}: ${t.slice(0, 200)}`);
+    if (!r.ok) throw new Error(`${r.status} ${method} ${full.replace(base, '').slice(0, 90)}: ${t.slice(0, 200)}`);
     return t ? JSON.parse(t) : {};
   };
+}
+
+// Browser route, SharePoint REST with the owner's cookies: only the allowed channel folder (and its subfolders). Upload
+// without overwrite, create a subfolder, read files back; never delete, move, recycle or touch another site or folder.
+const spLiteral = (s) => { const m = /\('((?:[^']|'')*)'\)/.exec(s); return m ? m[1].replace(/''/g, "'") : null; };
+export function sharePointRoute({ site, folder }, url, method, body) {
+  const base = `${String(site).replace(/\/+$/, '')}/_api/`;
+  if (!isM365Host(site) || !url.startsWith(base)) return false;
+  const route = decodeURIComponent(url.slice(base.length).split('?')[0]);
+  const root = String(folder).replace(/\/+$/, '');
+  const inside = (p) => p !== null && (p === root || p.startsWith(`${root}/`)) && !/(^|\/)\.{1,2}(\/|$)/.test(p);
+  if (/\b(delete|recycle|moveto|copyto|checkout|checkin|undocheckout|listitemallfields)\b/i.test(route)) return false;
+  if (method === 'GET') return route === 'web/currentuser'
+    || (/^web\/getfilebyserverrelativeurl\(/i.test(route) && /^web\/getfilebyserverrelativeurl\('(?:[^']|'')*'\)(\/\$value)?$/i.test(route) && inside(spLiteral(route)))
+    || (/^web\/getfolderbyserverrelativeurl\('(?:[^']|'')*'\)(\/(files|folders))?$/i.test(route) && inside(spLiteral(route)));
+  if (method !== 'POST') return false;
+  if (route === 'contextinfo') return true;
+  if (route.toLowerCase() === 'web/folders') { try { return inside(JSON.parse(body || '{}').ServerRelativeUrl); } catch { return false; } }
+  const add = /^web\/getfolderbyserverrelativeurl\('((?:[^']|'')*)'\)\/files\/add\(url='((?:[^']|'')*)',overwrite=false\)$/i.exec(route);
+  return !!add && inside(add[1].replace(/''/g, "'")) && !/[\\/]/.test(add[2]) && !/^\.+$/.test(add[2]);
+}
+
+// Browser route, Teams web: the page may post only into the batch's own channel; no deletes; mail actions refused.
+export function teamsWebAllowed(method, url, { channel }) {
+  const m = String(method).toUpperCase();
+  if (m === 'DELETE' || m === 'PATCH') return false;
+  if (!browserRequestAllowed(m === 'PUT' ? 'GET' : m, url)) return false;
+  let p = '';
+  try { p = decodeURIComponent(new URL(url).pathname).toLowerCase(); } catch { return false; }
+  const conv = /\/conversations\/([^/]+)\/messages(\/|$)/.exec(p);
+  if (conv && ['POST', 'PUT'].includes(m)) return conv[1] === String(channel).toLowerCase() && !conv[2];
+  return true;
 }

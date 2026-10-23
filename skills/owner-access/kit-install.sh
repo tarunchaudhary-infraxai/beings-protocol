@@ -9,7 +9,7 @@ KIT=${OWNER_ACCESS_KIT_DIR:-$HOME_DIR/ops/teams-kit}
 [[ -f $KIT/graph.mjs && -f $KIT/scope.mjs ]] || { echo "owner-access: Teams kit not found at $KIT (install --with teams-kit first)" >&2; exit 1; }
 
 FILES=(oa-env.mjs oa-config.mjs sessions.mjs owner-session.mjs guards.mjs ledger.mjs go-approval.mjs mailbox-lib.mjs channel-lib.mjs
-  forward-rules.mjs owner-web.mjs shared-mailbox-drafts.mjs shared-inbox-monitor.mjs channel-posts.mjs mail-forward-rules.mjs
+  forward-rules.mjs browser-route.mjs owner-browser.mjs owner-web.mjs shared-mailbox-drafts.mjs shared-inbox-monitor.mjs channel-posts.mjs mail-forward-rules.mjs
   owner-access-doctor.mjs verify-upload.py owner-web owner-access-login owner-access-run shared-inbox-monitor.sh)
 for f in "${FILES[@]}"; do install -m "$( [[ -x $SRC/$f ]] && echo 755 || echo 644 )" "$SRC/$f" "$KIT/$f"; done
 install -m 644 "$SRC/README.md" "$KIT/OWNER-ACCESS.md"

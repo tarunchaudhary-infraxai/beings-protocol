@@ -61,3 +61,17 @@ export function messageBody(post, items) {
 }
 
 export const OFFICE = /\.(docx|xlsx|pptx)$/i;
+
+// Browser route target: the channel's SharePoint folder URL from the manifest (`browser_folder`), which must be listed in
+// [channel_posts] browser_folders. Returns { site, folder } (folder = server-relative path).
+export function browserTarget(m, allowedFolders = []) {
+  const want = String(m.browser_folder || '').replace(/\/+$/, '');
+  if (!want) throw new Error('browser route needs browser_folder (the channel folder URL) in the manifest');
+  if (!allowedFolders.map((x) => String(x).replace(/\/+$/, '').toLowerCase()).includes(want.toLowerCase())) throw new Error('browser_folder is not in [channel_posts] browser_folders');
+  const u = new URL(want);
+  const site = /^\/(sites|teams)\/[^/]+/.exec(u.pathname);
+  if (u.protocol !== 'https:' || !site || u.search || u.hash) throw new Error('browser_folder must be https://<host>/sites/<site>/<library>/<folder>');
+  const folder = decodeURIComponent(u.pathname);
+  if (/(^|\/)\.{1,2}(\/|$)/.test(folder) || folder.split('/').length < 4) throw new Error('browser_folder must be a folder inside the site');
+  return { site: u.origin + site[0], folder };
+}

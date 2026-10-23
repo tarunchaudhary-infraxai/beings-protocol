@@ -25,8 +25,8 @@ export function settings(cfg = loadConfig(), env = kitEnv()) {
     state, env, cfg,
     beingUpn: (env.BEING_UPN || '').toLowerCase(), ownerUpn: (env.OWNER_UPN || '').toLowerCase(),
     beingCache: env.BEING_CACHE || '', ownerCache: env.OWNER_CACHE || '',
-    beingProfile: prof(cfg.owner_access?.being_browser_profile, 'state/being-browser'),
-    ownerProfile: prof(cfg.owner_access?.owner_browser_profile, 'state/owner-browser'),
+    beingProfile: prof(cfg.owner_access?.being_browser_profile || env.BEING_BROWSER_PROFILE, 'state/being-browser'),
+    ownerProfile: prof(cfg.owner_access?.owner_browser_profile || env.OWNER_BROWSER_PROFILE, 'state/owner-browser'),
   };
 }
 

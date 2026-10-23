@@ -114,3 +114,26 @@ test('shared-mailbox send and channel posts need their own switches', () => {
   const c = run('channel-posts.mjs', ['apply', '--manifest', m]);
   assert.equal(c.status, 2); assert.match(c.stderr, /manifest/);
 });
+
+test('browser route: needs both browser sessions (not the API ones); a bad route value stops the tool', () => {
+  const { k, st } = kit();
+  const cfg = (route) => writeFileSync(path.join(k, 'owner-access.toml'),
+    `[owner_access]\nenabled = true\n[abilities]\nshared_mailbox_drafts = true\n[shared_mailbox]\naddress = "team@example.com"\nroute = "${route}"\n`);
+  const input = path.join(k, 'in.json');
+  writeFileSync(input, JSON.stringify([{ to: 'a@example.com', subject: 'Hello', body_text: 'x' }]));
+  const owner = grant(k, 'owner-only');
+  const run = () => spawnSync('node', [path.join(k, 'shared-mailbox-drafts.mjs'), 'create', '--input', input], { encoding: 'utf8', env: { ...ENV, BEING_SEND_TOKEN: owner } });
+  cfg('web');
+  let r = run();
+  assert.equal(r.status, 2); assert.match(r.stderr, /must be "graph" or "browser"/);
+  cfg('browser');
+  for (const role of ['being', 'owner']) stamp(st, role, 'outlook', `${role}@example.com`);
+  r = run();
+  assert.equal(r.status, 6); assert.match(r.stderr, /being browser session not signed in/);
+  stamp(st, 'being', 'browser', 'being@example.com');
+  r = run();
+  assert.equal(r.status, 6); assert.match(r.stderr, /owner browser session not signed in/);
+  stamp(st, 'owner', 'browser', 'owner@example.com');
+  r = run();
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /WOULD CREATE: a@example\.com \| Hello/);
+});
