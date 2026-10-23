@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """being-watchdog: one alert when a job or work run is idle for BEING_STALL_MIN minutes; marks vanished jobs died.
-Activity = transcript/log writes or CPU use anywhere in the job's process tree."""
+Activity = transcript/log writes or CPU use anywhere in the job's process tree. A job whose tree only sleeps in a wait
+loop (queued behind other work) is waiting its turn, not stuck. Alerts carry the last tool action from the transcript."""
 import glob, json, os, re, subprocess, time, uuid
 from datetime import datetime
 
@@ -20,6 +21,24 @@ seen = json.load(open(SEEN)) if os.path.exists(SEEN) else {}
 
 def claude_files(sid):
     return [os.path.join(CLAUDE_DIR, sid + ".jsonl")] + glob.glob(os.path.join(CLAUDE_DIR, sid, "subagents", "*.jsonl"))
+
+def last_action(path):
+    """The newest tool call in a Claude Code transcript, as "Tool: what"."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, os.path.getsize(path) - 262144))
+            rows = fh.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return ""
+    for l in reversed(rows):
+        try: e = json.loads(l)
+        except ValueError: continue
+        for c in reversed((e.get("message") or {}).get("content") or []):
+            if isinstance(c, dict) and c.get("type") == "tool_use":
+                i = c.get("input") or {}
+                what = i.get("description") or i.get("command") or i.get("file_path") or i.get("pattern") or ""
+                return f"{c.get('name')}: {' '.join(str(what).split())[:140]}"
+    return ""
 
 def last_activity(paths):
     ts = [os.path.getmtime(p) for p in paths if os.path.exists(p)]
@@ -45,15 +64,25 @@ def job_tree(procs, jid):
         p = todo.pop(); out.append(p); todo += kids.get(p, [])
     return out
 
+IDLE = {b"bash", b"sh", b"dash", b"sleep", b"flock", b"timeout", b"python3", b"python", b"inotifywait"}
+WAIT = {b"sleep", b"flock", b"inotifywait"}
+
+def queued(procs, tree):
+    """True while the tree only waits (sleep/flock in a shell loop): queued behind other jobs, not stuck."""
+    names = [os.path.basename(procs[p][2].split(b"\x00")[0]) for p in tree if procs.get(p) and procs[p][2]]
+    return any(n in WAIT for n in names) and all(n in IDLE for n in names)
+
 def alert(key, html):
     if key in seen: return
     r = subprocess.run(["node", os.path.join(KIT, "teams-send-dm.mjs"), "--verbatim"], input=html, text=True, capture_output=True)
     if r.returncode == 0: seen[key] = datetime.now().isoformat()
 
-def stalled(what, since):
+def stalled(what, since, action=""):
+    esc = lambda t: t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return (f"<p>⏱ <b>Needs a look: {what}</b></p><p>No CPU and no output for {int((time.time() - since) // 60)} min "
-            f"(last at {datetime.fromtimestamp(since):%H:%M}). It may be waiting on a prompt or a connection. "
-            f"Reply here if you want it stopped or restarted.</p>")
+            f"(last at {datetime.fromtimestamp(since):%H:%M}).</p>"
+            + (f"<p>Last action: <code>{esc(action)}</code></p>" if action else "")
+            + "<p>It may be waiting on a prompt or a connection. Reply here if you want it stopped or restarted.</p>")
 
 now = time.time()
 procs = proc_table()
@@ -63,6 +92,10 @@ for jf in glob.glob(os.path.join(STATE, "jobs", "*.json")):
     if d.get("status") != "running": continue
     files = claude_files(d["session_id"]) if d["kind"] == "agent" and d.get("session_id") else \
         [os.path.join(STATE, "jobs", d["id"] + (".events.jsonl" if d["kind"] == "codex" else ".log"))]
+    # A run job that resumes a Claude session writes that session's transcript, not its own log.
+    pl = [str(x) for x in d.get("payload") or []]
+    resumed = [pl[i + 1] for i, x in enumerate(pl[:-1]) if x in ("--resume", "-r") and re.fullmatch(r"[A-Za-z0-9-]{8,100}", pl[i + 1])]
+    for sid in resumed: files += claude_files(sid)
     started = datetime.fromisoformat(d["started"]).timestamp()
     t = last_activity(files) or started
     tree = job_tree(procs, d["id"])
@@ -75,8 +108,12 @@ for jf in glob.glob(os.path.join(STATE, "jobs", "*.json")):
         json.dump(d, open(jf, "w"), indent=2)
         alert("job:" + d["id"], f"<p>Job “{d['name']}” stopped unexpectedly (its process is gone). Marked as died; "
               f"log: <code>being-job log {d['id']}</code>.</p>")
+    elif queued(procs, tree):
+        continue   # waiting its turn behind other jobs
     elif now - t > STALL_MIN * 60:
-        alert("job:" + d["id"], stalled(f"job “{d['name']}”", t))
+        tx = [f for f in files if f.endswith(".jsonl") and CLAUDE_DIR in f and os.path.exists(f)]
+        act = last_action(max(tx, key=os.path.getmtime)) if tx else f"see being-job log {d['id']}"
+        alert("job:" + d["id"], stalled(f"job “{d['name']}”", t, act))
 
 owner_sid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"being-daily/{NAME}/{datetime.now():%Y-%m-%d}"))
 for bf in glob.glob(os.path.join(STATE, "work.*.jsonl")):
@@ -86,6 +123,6 @@ for bf in glob.glob(os.path.join(STATE, "work.*.jsonl")):
     except (OSError, IndexError): sid = owner_sid
     t = last_activity(claude_files(sid) + [bf])
     if t and now - t > STALL_MIN * 60:
-        alert(f"run:{pid}", stalled("the current Teams task", t))
+        alert(f"run:{pid}", stalled("the current Teams task", t, last_action(claude_files(sid)[0])))
 
 json.dump(seen, open(SEEN, "w"), indent=1)
