@@ -359,26 +359,25 @@ axon analyze .  # Index the codebase
 **Architecture:**
 - **Source of truth:** `memory-graph/` directory with markdown files (committed to git)
 - **Index:** `~/.basic-memory/memory.db` (SQLite with FTS5 + sqlite-vec, gitignored)
-- **Watcher:** `basic-memory sync --watch` daemon picks up file changes in milliseconds
+- **Watcher:** a systemd user unit (`bin/being-memory-index`) keeps the index current across reboots
 - **Note format:** YAML frontmatter + `## Observations` (`- [category] fact`) + `## Relations` (`- type [[wikilink]]`)
 
 **Why markdown as the source of truth:**
 - **Git-syncable** — memory-graph/ commits cleanly, no binary merge conflicts
 - **Hand-editable** — open in Obsidian/VS Code and fix directly
 - **Human-readable** — inspect what your Being remembers
-- **Rebuildable** — `basic-memory sync` rebuilds the index from markdown
+- **Rebuildable** — `bin/being-bm-repair` rebuilds the index from markdown
 
 **Claude Code hooks:**
-- `PreCompact` — Extract facts via `write_note` before context compression
-- `Stop` — Write session summary to `memory-graph/sessions/YYYY-MM-DD`
 - `SessionStart` — Recall via `search_notes` + `recent_activity`
+- `UserPromptSubmit` — Today's date and a pointer to `GOALS.md`
 
 **Installation:**
 ```bash
 # Requires Python >= 3.10
 uv tool install basic-memory  # OR pipx install, OR pip install --user
 basic-memory project add my-being "$(pwd)/memory-graph" --default
-basic-memory sync --watch &  # background daemon
+bin/being-memory-index install  # index watcher as a systemd user unit
 ```
 
 **Data storage:**

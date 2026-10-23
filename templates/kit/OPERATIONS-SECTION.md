@@ -11,3 +11,8 @@
 - **Long work:** hand it to `ops/teams-kit/being-job` with a prompt that follows `.beings/JOB-CHECKLIST.md`.
 - **Blocked?** `ops/teams-kit/being-blocker "<task>" "<exact error>" "<need>"` after two failures; never loop.
 - **Status:** `ops/teams-kit/being-status` and `being-job list` before answering "status?".
+- **Auto-memory:** Claude Code's per-project memory (`.beings/auto-memory-live/`) is part of memory: one fact per file,
+  one line each in its `MEMORY.md`. Keep that index under ~24 KB; `bin/<name> doctor` warns before it is cut off.
+- **App stacks:** every app you build or run locally gets a runner (`bin/<name> stack new <app>`) and is registered;
+  nothing starts at boot. `bin/<name> stacks status|down|audit`.
+- **Secrets:** `~/.config/<name>/<app>.env` (0600, folder 0700), loaded by services with `EnvironmentFile=`; never in the repo.

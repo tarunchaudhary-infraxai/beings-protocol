@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # publish-check: fail-closed secret gate for pushes to a PUBLIC repo (gitleaks + trufflehog + a pattern sweep).
 #   publish-check.sh <git-range|rev>  |  publish-check.sh --pre-push <remote> [<url>] (git pre-push hook: refs on stdin)
-# Config dir $PUBLISH_CHECK_CONFIG (default ~/.config/publish-check): deny.txt, allow.txt, secret-sources.txt (one per line).
+# Config dir $PUBLISH_CHECK_CONFIG (default ~/.config/<being>/publish-check, else ~/.config/publish-check): deny.txt, allow.txt, secret-sources.txt (one per line).
 set -euo pipefail
 
-CFG="${PUBLISH_CHECK_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/publish-check}"
+CFG="${PUBLISH_CHECK_CONFIG:-${BEING_CONFIG_DIR:-$HOME/.config/${BEING_NAME:-being}}/publish-check}"
+[[ -n "${PUBLISH_CHECK_CONFIG:-}" || -d "$CFG" ]] || CFG="${XDG_CONFIG_HOME:-$HOME/.config}/publish-check"
 GITLEAKS="${GITLEAKS:-$(command -v gitleaks || echo "$HOME/.local/bin/gitleaks")}"
 TRUFFLEHOG="${TRUFFLEHOG:-$(command -v trufflehog || echo "$HOME/.local/bin/trufflehog")}"
 ZERO=0000000000000000000000000000000000000000

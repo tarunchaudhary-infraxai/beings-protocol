@@ -13,3 +13,5 @@ A background job runs with no conversation history and nobody to ask. The prompt
 - [ ] **Result file**: a short summary of what was produced, paths, how it was verified, what is unverified.
 - [ ] **Model**: `--small` for chores (lookups, account set-up, probes); default strong model for research, reviews, builds.
 - [ ] **Parallel jobs on one repo**: each branches from and merges into the day's batch branch; only the Being merges the batch.
+- [ ] **Apps it starts**: anything the job builds or runs locally gets a runner (`bin/<name> stack new <app>`), is
+      registered in the stacks list, and is stopped (`<app> down`) when the job ends. Nothing is armed to start at boot.

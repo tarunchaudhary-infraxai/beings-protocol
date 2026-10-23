@@ -38,9 +38,15 @@
 #   --no-memory Skip installing basic-memory. By default basic-memory (and uv,
 #               if missing) is installed. Use only for air-gapped/restricted envs.
 #   --with <c>  Opt-in components, comma-separated: operations (guardrails, authority
-#               matrix, job checklist, facts/, multi-client launcher) and teams-kit
-#               (ops/teams-kit/, implies operations). Needs --global or --update.
+#               matrix, job checklist, facts/, multi-client launcher, memory backup and
+#               app-stack tools, global guardrails for Claude Code and Codex), teams-kit
+#               (ops/teams-kit/, implies operations), statusline (Claude Code status bar),
+#               memory-sync (arm the nightly memory backup), or any skills/<name>/ in this
+#               repo (copied to ops/<name>/, then its kit-install.sh runs). Needs --global or --update.
 #   --owner <n> Owner (human partner) name for kit templates and the Teams .env.
+#   --config <f> being.toml: [being] name/owner/tz/track_private, [kit] with, [access] list.
+#               Flags on the command line win over the file.
+#   --track-private  Commit .beings-local/ in git (default: never committed).
 #   --check     Report which protocol and kit pieces exist here. Changes nothing.
 #   With --update --with, --name is the Being's name (not taken from the directory).
 # ============================================================
@@ -56,6 +62,11 @@ NO_MEMORY_MODE=false
 CHECK_MODE=false
 WITH_COMPONENTS=""
 OWNER_NAME="your partner"
+OWNER_SET=false
+CONFIG_FILE=""
+TRACK_PRIVATE=false
+BEING_ACCESS=""
+CONFIG_TZ=""
 
 # Colors
 GREEN='\033[0;32m'
@@ -309,6 +320,15 @@ create_agents_md() {
 # Update .gitignore
 # ============================================================
 update_gitignore() {
+  if $TRACK_PRIVATE; then
+    # Owner's choice: .beings-local/ is committed. Secrets still belong outside the repo.
+    if [ -f ".gitignore" ] && grep -qxF ".beings-local/" .gitignore; then
+      grep -vxF ".beings-local/" .gitignore | grep -vxF "# Beings Protocol — Private memory (never commit)" > .gitignore.tmp || true
+      cat .gitignore.tmp > .gitignore; rm -f .gitignore.tmp
+    fi
+    print_warn ".beings-local/ will be committed (--track-private); keep credentials in ~/.config/<being>/, never there"
+    return
+  fi
   if [ -f ".gitignore" ]; then
     if grep -q ".beings-local" .gitignore 2>/dev/null; then
       print_warn ".beings-local/ already in .gitignore — skipping"
@@ -719,35 +739,8 @@ EOF
     setup_memory_hooks
   fi
 
-  # 10. Start basic-memory sync --watch daemon if not already running
-  local watch_running=false
-  if [ -f "$HOME/.basic-memory/watch-status.json" ]; then
-    if python3 -c "
-import json, os
-try:
-    with open(os.path.expanduser('~/.basic-memory/watch-status.json')) as f:
-        d = json.load(f)
-    pid = d.get('pid')
-    running = d.get('running', False)
-    if running and pid:
-        os.kill(pid, 0)  # signal 0 = just check, don't kill
-        exit(0)
-except Exception:
-    pass
-exit(1)
-" 2>/dev/null; then
-      watch_running=true
-    fi
-  fi
-
-  if $watch_running; then
-    print_info "basic-memory watch daemon already running"
-  else
-    print_info "Starting basic-memory sync --watch in background..."
-    nohup basic-memory sync --watch >/dev/null 2>&1 &
-    disown 2>/dev/null || true
-    print_step "Started ${BOLD}basic-memory sync --watch${NC}"
-  fi
+  # 10. Index watcher as a systemd user unit (survives reboots), plus the index repair tool.
+  setup_memory_index
 
   # 11. Update .gitignore
   if [ -f ".gitignore" ]; then
@@ -774,6 +767,22 @@ exit(1)
 }
 
 # ============================================================
+# Memory index watcher (user unit) and repair tool
+# ============================================================
+# BEING_NO_SYSTEMD=1 skips systemctl (containers, CI, tests).
+setup_memory_index() {
+  local f
+  for f in being-memory-index being-bm-repair; do kit_sync_file "skills/memory/bin/$f" "bin/$f" exec; done
+  if [ "${BEING_NO_SYSTEMD:-0}" != 1 ] && command -v systemctl &>/dev/null && systemctl --user show-environment &>/dev/null; then
+    if BEING_HOME="$(pwd -P)" BEING_BM_PROJECT="${PWD##*/}" bin/being-memory-index install >/dev/null 2>&1; then
+      print_step "Index watcher runs as user unit ${BOLD}${PWD##*/}-memory-index.service${NC}"
+      return
+    fi
+  fi
+  print_warn "No systemd user session: run ${BOLD}bin/being-memory-index watch${NC} under your own supervisor"
+}
+
+# ============================================================
 # Set up Claude Code hooks for memory
 # ============================================================
 setup_memory_hooks() {
@@ -781,121 +790,55 @@ setup_memory_hooks() {
 
   mkdir -p .claude
 
-  # Check if already up-to-date (all 6 hooks present, no legacy hooks)
-  if [ -f "$settings_file" ] && \
-     grep -q "write_note\|search_notes" "$settings_file" 2>/dev/null && \
-     grep -q "AUTONOMY CHECK\|UserPromptSubmit\|MEMORY CHECK" "$settings_file" 2>/dev/null && \
-     ! grep -q "MegaMemory\|understand tool\|get_concept" "$settings_file" 2>/dev/null; then
-    print_info "Memory hooks already up-to-date — skipping"
-    return
-  fi
-
-  # Try Python merge — handles legacy migration and idempotent adds
+  # Only hooks that put something in the model's context are installed (SessionStart, UserPromptSubmit).
+  # Echo-only reminders from older kits are removed on --update; hooks you added yourself are kept.
   if command -v python3 &>/dev/null; then
-    python3 -c "
-import json, subprocess
+    if python3 - "$settings_file" <<'PY'
+import json, sys
 from pathlib import Path
 
 new_hooks = {
-    'PreCompact': [{
-        'matcher': '',
-        'hooks': [{'type': 'command', 'command': \"echo 'MEMORY PRESERVATION: Context is about to be compressed. Extract key decisions, learnings, and facts from this session. Use write_note to create or update notes in memory-graph/ with clear titles and folders (e.g. decisions/, learnings/, sessions/YYYY-MM-DD). Include observations as bulleted [category] lines and use [[wikilinks]] for relations. Markdown files are the source of truth.'\"}]
-    }],
-    'Stop': [{
-        'matcher': '',
-        'hooks': [{'type': 'command', 'command': \"echo 'SESSION END: Write a session summary note via write_note to memory-graph/sessions/YYYY-MM-DD. Include: what was built, decisions made, unresolved questions, and links to relevant existing notes. Capture only what future-you will need.'\"}]
-    }],
-    'SessionStart': [{
-        'matcher': '',
-        'hooks': [{'type': 'command', 'command': \"echo 'MEMORY RECALL: Query basic-memory via search_notes for context relevant to this session. Use recent_activity to see what changed recently. Read identity files (SOUL.md, IDENTITY.md) as always — those are who you are. Search for anything relevant to what the user is asking.'\"}]
-    }],
-    'PreToolUse': [{
-        'matcher': 'Bash',
-        'hooks': [{'type': 'command', 'command': \"echo 'AUTONOMY CHECK: Before running this shell command, verify it against .beings/AUTONOMY.md. Destructive ops (rm, git push/force, delete, drop), external sends (email, Teams, Slack), billing changes, and production deploys require explicit authority. Log autonomous decisions in memory/YYYY-MM-DD.md.'\"}]
-    }],
-    'PostToolUse': [{
-        'matcher': 'Write|Edit',
-        'hooks': [{'type': 'command', 'command': \"echo 'MEMORY CHECK: You just modified a file. If this change captures a decision, a new pattern, or something future-you needs to know — write a note to memory-graph/ via write_note now. Do not wait for session end.'\"}]
-    }],
-    'UserPromptSubmit': [{
-        'matcher': '',
-        'hooks': [{'type': 'command', 'command': 'echo \"CONTEXT: Today is \$(date +%Y-%m-%d). Check .beings/GOALS.md if you have not this session.\"'}]
-    }]
+    'SessionStart': [{'matcher': '', 'hooks': [{'type': 'command', 'command': "echo 'MEMORY RECALL: Query basic-memory via search_notes for context relevant to this session. Use recent_activity to see what changed recently. Read identity files (SOUL.md, IDENTITY.md) as always — those are who you are. Search for anything relevant to what the user is asking.'"}]}],
+    'UserPromptSubmit': [{'matcher': '', 'hooks': [{'type': 'command', 'command': 'echo "CONTEXT: Today is $(date +%Y-%m-%d). Check .beings/GOALS.md if you have not this session."'}]}],
 }
+markers = {'SessionStart': ['search_notes', 'MEMORY RECALL'], 'UserPromptSubmit': ['CONTEXT: Today']}
+dropped = ('MegaMemory', 'understand tool', 'get_concept', 'megamemory', 'MEMORY PRESERVATION:',
+           'SESSION END: Write a session summary', 'AUTONOMY CHECK: Before running', 'MEMORY CHECK: You just modified')
 
-path = Path('$settings_file')
+path = Path(sys.argv[1])
 data = json.loads(path.read_text()) if path.exists() else {}
-data.setdefault('hooks', {})
+hooks = data.setdefault('hooks', {})
 
-def is_legacy_hook(h):
-    for sub in h.get('hooks', []):
-        cmd = sub.get('command', '')
-        if any(t in cmd for t in ('MegaMemory', 'understand tool', 'get_concept', 'megamemory')):
-            return True
-    return False
+def cmds(h):
+    return [s.get('command', '') for s in h.get('hooks', [])]
 
-def has_marker(h, markers):
-    for sub in h.get('hooks', []):
-        cmd = sub.get('command', '')
-        if any(m in cmd for m in markers):
-            return True
-    return False
-
-markers = {
-    'PreCompact':        ['write_note', 'MEMORY PRESERVATION'],
-    'Stop':              ['write_note', 'SESSION END'],
-    'SessionStart':      ['search_notes', 'MEMORY RECALL'],
-    'PreToolUse':        ['AUTONOMY CHECK'],
-    'PostToolUse':       ['MEMORY CHECK'],
-    'UserPromptSubmit':  ['CONTEXT: Today'],
-}
-
+for event in list(hooks):
+    kept = [h for h in hooks[event] if not any(t in c for c in cmds(h) for t in dropped)]
+    if kept:
+        hooks[event] = kept
+    else:
+        del hooks[event]
 for event, hook_list in new_hooks.items():
-    existing = [h for h in data['hooks'].get(event, []) if not is_legacy_hook(h)]
-    if not any(has_marker(h, markers[event]) for h in existing):
+    existing = hooks.get(event, [])
+    if not any(m in c for h in existing for c in cmds(h) for m in markers[event]):
         existing.extend(hook_list)
-    data['hooks'][event] = existing
-
-path.write_text(json.dumps(data, indent=2) + '\n')
-" 2>/dev/null
-    if [ $? -eq 0 ]; then
-      print_step "Merged memory hooks into ${BOLD}${settings_file}${NC} (6 hooks total)"
+    hooks[event] = existing
+path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + '\n')
+PY
+    then
+      print_step "Memory hooks in ${BOLD}${settings_file}${NC} (session recall + date; old reminder hooks removed)"
       return
     fi
   fi
 
-  # No Python or merge failed — write a fresh complete file
+  [ -f "$settings_file" ] && { print_warn "Could not merge ${settings_file} (python3 missing?) — left as is"; return; }
   cat > "$settings_file" <<'HOOKS_EOF'
 {
   "hooks": {
-    "PreCompact": [
-      {
-        "matcher": "",
-        "hooks": [{"type": "command", "command": "echo 'MEMORY PRESERVATION: Context is about to be compressed. Extract key decisions, learnings, and facts from this session. Use write_note to create or update notes in memory-graph/ with clear titles and folders (e.g. decisions/, learnings/, sessions/YYYY-MM-DD). Include observations as bulleted [category] lines and use [[wikilinks]] for relations. Markdown files are the source of truth.'"}]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [{"type": "command", "command": "echo 'SESSION END: Write a session summary note via write_note to memory-graph/sessions/YYYY-MM-DD. Include: what was built, decisions made, unresolved questions, and links to relevant existing notes. Capture only what future-you will need.'"}]
-      }
-    ],
     "SessionStart": [
       {
         "matcher": "",
         "hooks": [{"type": "command", "command": "echo 'MEMORY RECALL: Query basic-memory via search_notes for context relevant to this session. Use recent_activity to see what changed recently. Read identity files (SOUL.md, IDENTITY.md) as always — those are who you are. Search for anything relevant to what the user is asking.'"}]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [{"type": "command", "command": "echo 'AUTONOMY CHECK: Before running this shell command, verify it against .beings/AUTONOMY.md. Destructive ops (rm, git push/force, delete, drop), external sends (email, Teams, Slack), billing changes, and production deploys require explicit authority. Log autonomous decisions in memory/YYYY-MM-DD.md.'"}]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit",
-        "hooks": [{"type": "command", "command": "echo 'MEMORY CHECK: You just modified a file. If this change captures a decision, a new pattern, or something future-you needs to know — write a note to memory-graph/ via write_note now. Do not wait for session end.'"}]
       }
     ],
     "UserPromptSubmit": [
@@ -907,7 +850,7 @@ path.write_text(json.dumps(data, indent=2) + '\n')
   }
 }
 HOOKS_EOF
-  print_step "Created ${BOLD}${settings_file}${NC} with 6 memory hooks"
+  print_step "Created ${BOLD}${settings_file}${NC} with the memory hooks"
 }
 
 # ============================================================
@@ -943,8 +886,9 @@ seed_memory_graph() {
     } > "$dest"
   done
 
-  # One-time sync to index seeded notes
-  basic-memory sync >/dev/null 2>&1 || true
+  # One-time index of the seeded notes
+  if [ -x bin/being-bm-repair ]; then bin/being-bm-repair >/dev/null 2>&1 || true
+  else basic-memory reindex >/dev/null 2>&1 || basic-memory sync >/dev/null 2>&1 || true; fi
   print_step "Seeded ${BOLD}memory-graph/identity/${NC} from .beings/ files"
 }
 
@@ -1119,11 +1063,16 @@ kit_validate() {
   local c
   for c in ${WITH_COMPONENTS//,/ }; do
     case "$c" in
-      operations|teams-kit) ;;
-      *) echo "  Error: unknown --with component '$c' (use: operations, teams-kit)" >&2; exit 2 ;;
+      operations|teams-kit|statusline|memory-sync) ;;
+      memory) echo "  Error: memory is part of the core install (drop --no-memory instead)" >&2; exit 2 ;;
+      *) if ! [[ "$c" =~ ^[a-z][a-z0-9-]*$ ]] || ! component_exists "$c"; then
+           echo "  Error: unknown --with component '$c' (built in: operations, teams-kit, statusline, memory-sync; or a skills/<name>/ directory)" >&2
+           exit 2
+         fi ;;
     esac
   done
-  kit_wants teams-kit && WITH_COMPONENTS="operations,$WITH_COMPONENTS"
+  # Every component builds on the Operations Kit.
+  kit_wants operations || WITH_COMPONENTS="operations,$WITH_COMPONENTS"
   if kit_wants teams-kit; then
     # The Teams kit runner and handler are Linux scripts (flock, setsid, GNU find/readlink, systemd user units).
     local t missing=""
@@ -1171,7 +1120,7 @@ kit_validate() {
   fi
 }
 
-# kit_add <repo path> <dest>: add if missing, filling {{BEING_NAME}} / {{OWNER_NAME}}.
+# kit_add <repo path> <dest>: add if missing, filling {{BEING_NAME}} / {{OWNER_NAME}} / {{BEING_HOME}}.
 kit_add() {
   local src="$1"
   local dest="$2"
@@ -1182,7 +1131,8 @@ kit_add() {
   mkdir -p "$(dirname "$dest")"
   local tmp; tmp="$(mktemp)"
   fetch_or_copy_file "$src" "$tmp"
-  sed -e "s/{{BEING_NAME}}/$(sed_lit "$BEING_NAME")/g" -e "s/{{OWNER_NAME}}/$(sed_lit "$OWNER_NAME")/g" "$tmp" > "$dest"
+  sed -e "s/{{BEING_NAME}}/$(sed_lit "$BEING_NAME")/g" -e "s/{{OWNER_NAME}}/$(sed_lit "$OWNER_NAME")/g" \
+      -e "s/{{BEING_HOME}}/$(sed_lit "$(pwd -P)")/g" "$tmp" > "$dest"
   rm -f "$tmp"
   print_step "Added ${BOLD}${dest}${NC}"
   KIT_ADDED=$((KIT_ADDED + 1))
@@ -1289,6 +1239,221 @@ kit_teams() {
   command -v node &>/dev/null || print_warn "Node.js >= 20 not found — the Teams kit needs it"
 }
 
+# Kit files copied verbatim into the Being home (repo path -> home path), plus executables among them.
+KIT_BIN_FILES=(
+  "templates/kit/bin/being-config:bin/being-config"
+  "skills/memory/bin/being-memory-sync:bin/being-memory-sync"
+  "skills/memory/bin/being-session-registry:bin/being-session-registry"
+  "templates/kit/guards/publish-check.sh:bin/publish-check"
+)
+# Templates for later use (filled with the Being's name and home), kept in ops/kit-templates/.
+KIT_OPS_TEMPLATES=(
+  bin/stack-runner:stack-runner bin/desktop-shim:desktop-shim being.toml.example:being.toml.example
+  systemd/being-heartbeat.service.example:systemd/being-heartbeat.service.example
+  systemd/being-heartbeat.timer.example:systemd/being-heartbeat.timer.example
+  systemd/standby-gate.conf.example:systemd/standby-gate.conf.example
+  systemd/wait-for-mount.conf.example:systemd/wait-for-mount.conf.example
+  systemd/secrets-env.conf.example:systemd/secrets-env.conf.example
+  jobs/scheduled-job/run.sh:jobs/scheduled-job/run.sh jobs/scheduled-job/prompt.md:jobs/scheduled-job/prompt.md
+  jobs/scheduled-job/cron.example:jobs/scheduled-job/cron.example
+  jobs/research-job/run.sh:jobs/research-job/run.sh jobs/research-job/workers.conf.example:jobs/research-job/workers.conf.example
+  jobs/research-job/worker-prompt.md:jobs/research-job/worker-prompt.md jobs/research-job/merge-prompt.md:jobs/research-job/merge-prompt.md
+)
+GUARD_BEGIN="<!-- beings-kit:guardrails begin -->"
+GUARD_END="<!-- beings-kit:guardrails end -->"
+
+# kit_sync_file <repo path> <dest> [exec]: add if missing; a changed upstream file goes to <dir>/.kit-upgrade/.
+kit_sync_file() {
+  local src="$1" dest="$2" mode="${3:-}" tmp staged
+  tmp="$(mktemp)"
+  fetch_or_copy_file "$src" "$tmp"
+  chmod 644 "$tmp"
+  [ "$mode" = exec ] && chmod 755 "$tmp"
+  mkdir -p "$(dirname "$dest")"
+  if [ ! -e "$dest" ]; then
+    mv "$tmp" "$dest"
+    KIT_ADDED=$((KIT_ADDED + 1))
+  elif cmp -s "$tmp" "$dest"; then
+    rm -f "$tmp"
+    KIT_KEPT=$((KIT_KEPT + 1))
+  else
+    staged="$(dirname "$dest")/.kit-upgrade/$(basename "$dest")"
+    mkdir -p "$(dirname "$staged")"
+    mv "$tmp" "$staged"
+    print_warn "${dest} differs from the kit — new version in ${BOLD}${staged}${NC} (yours untouched)"
+  fi
+}
+
+# --config: read being.toml with the kit's TOML-subset reader; command-line flags win.
+load_config() {
+  [ -n "$CONFIG_FILE" ] || return 0
+  [ -f "$CONFIG_FILE" ] || { echo "  Error: --config file not found: $CONFIG_FILE" >&2; exit 2; }
+  command -v python3 &>/dev/null || { echo "  Error: --config needs python3" >&2; exit 2; }
+  CONFIG_FILE="$(cd "$(dirname "$CONFIG_FILE")" && pwd -P)/$(basename "$CONFIG_FILE")"
+  local tool; tool="$(mktemp)"
+  fetch_or_copy_file "templates/kit/bin/being-config" "$tool"
+  cfg() { python3 "$tool" "$CONFIG_FILE" "$@"; }
+  cfg check || { rm -f "$tool"; exit 2; }
+  [ -n "$BEING_NAME" ] || BEING_NAME="$(cfg get being.name '')"
+  $OWNER_SET || OWNER_NAME="$(cfg get being.owner "$OWNER_NAME")"
+  [ "$(cfg get being.track_private false)" = true ] && TRACK_PRIVATE=true
+  CONFIG_TZ="$(cfg get being.tz '')"
+  local with; with="$(cfg get kit.with '' | paste -sd, -)"
+  [ -n "$with" ] && WITH_COMPONENTS="${WITH_COMPONENTS:+$WITH_COMPONENTS,}$with"
+  BEING_ACCESS="$(cfg list access | paste -sd, -)"
+  rm -f "$tool"
+  unset -f cfg
+}
+
+# A --with name other than the built-ins must be a skills/<name>/ directory of this kit.
+component_exists() {
+  local c="$1"
+  [ "$c" = teams-kit ] && return 1
+  if [ -n "$SCRIPT_DIR" ] && [ -d "$SCRIPT_DIR/templates" ]; then
+    [ -d "$SCRIPT_DIR/skills/$c" ]
+  else
+    curl -fsSL "$BASE_URL/skills/$c/kit-files.txt" -o /dev/null 2>/dev/null
+  fi
+}
+
+# Files of skills/<c>/: its kit-files.txt ("path" or "path +x" per line) or, in a checkout, the directory itself.
+component_files() {
+  local c="$1" list
+  if [ -n "$SCRIPT_DIR" ] && [ -d "$SCRIPT_DIR/skills/$c" ]; then
+    if [ -f "$SCRIPT_DIR/skills/$c/kit-files.txt" ]; then
+      grep -v '^[[:space:]]*\(#\|$\)' "$SCRIPT_DIR/skills/$c/kit-files.txt"
+    else
+      (cd "$SCRIPT_DIR/skills/$c" && find . -type f ! -path './node_modules/*' ! -path './state/*' ! -path './.kit-upgrade/*' \
+        ! -name '.env' ! -name '*.pyc' -print | sed 's#^\./##' | LC_ALL=C sort | while IFS= read -r f; do
+          if [ -x "$f" ]; then echo "$f +x"; else echo "$f"; fi
+        done)
+    fi
+  else
+    list="$(mktemp)"
+    curl -fsSL "$BASE_URL/skills/$c/kit-files.txt" -o "$list"
+    grep -v '^[[:space:]]*\(#\|$\)' "$list"
+    rm -f "$list"
+  fi
+}
+
+# kit_component <name>: copy skills/<name>/ to ops/<name>/, then run its kit-install.sh hook (idempotent by contract).
+kit_component() {
+  local c="$1" dst="ops/$1" line f flag
+  while IFS= read -r line; do
+    f="${line% +x}"; flag=""; [ "$f" != "$line" ] && flag=exec
+    case "$f" in /*|*..*) echo "  Error: $c/kit-files.txt lists an unsafe path: $f" >&2; exit 1 ;; esac
+    kit_sync_file "skills/$c/$f" "$dst/$f" "$flag"
+  done < <(component_files "$c")
+  kit_ignore "$dst/.kit-upgrade/"
+  kit_ignore "$dst/state/"
+  kit_ignore "$dst/.env"
+  kit_ignore "$dst/node_modules/"
+  print_step "Component ${BOLD}${c}${NC} in ${BOLD}${dst}/${NC}"
+  if [ -f "$dst/kit-install.sh" ]; then
+    local upd=0; $UPDATE_MODE && upd=1
+    if ! BEING_NAME="$BEING_NAME" OWNER_NAME="$OWNER_NAME" BEING_CONFIG_FILE="$CONFIG_FILE" BEING_ACCESS="$BEING_ACCESS" \
+         BEING_KIT_UPDATE="$upd" BEING_KIT_VERSION="$KIT_VERSION" BEING_KIT_SOURCE="${SCRIPT_DIR:-$BASE_URL}" \
+         bash "$dst/kit-install.sh" "$(pwd -P)"; then
+      echo "  Error: $dst/kit-install.sh failed; fix it and re-run install.sh --update" >&2
+      exit 1
+    fi
+  fi
+}
+
+# Guardrails for every Claude Code and Codex session of this OS user, in a marked block.
+# A fresh birth adds the block if missing; --update refreshes it from .beings/GUARDRAILS.md.
+kit_guardrails_global() {
+  [ -f ".beings/GUARDRAILS.md" ] || return 0
+  command -v python3 &>/dev/null || { print_warn "python3 missing: guardrails not written to ~/.claude or ~/.codex"; return 0; }
+  local f refresh=0; $UPDATE_MODE && refresh=1
+  for f in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/instructions.md" "$HOME/.codex/AGENTS.md"; do
+    mkdir -p "$(dirname "$f")"
+    local r
+    r="$(python3 - "$f" ".beings/GUARDRAILS.md" "$GUARD_BEGIN" "$GUARD_END" "$refresh" "$(pwd -P)" <<'PY'
+import re, sys
+from pathlib import Path
+dest, src, begin, end, refresh, home = sys.argv[1:7]
+body = re.sub(r'<!--.*?-->\s*', '', Path(src).read_text(), flags=re.S).strip()
+block = f"{begin}\n<!-- From {home}/.beings/GUARDRAILS.md; refreshed by install.sh --update. Edit the source, not this block. -->\n{body}\n{end}\n"
+p = Path(dest)
+text = p.read_text() if p.exists() else ''
+if begin in text and end in text:
+    if refresh != '1':
+        print('kept'); sys.exit(0)
+    new = re.sub(re.escape(begin) + r'.*?' + re.escape(end) + r'\n?', lambda m: block, text, count=1, flags=re.S)
+    if new == text:
+        print('kept'); sys.exit(0)
+    p.write_text(new); print('refreshed')
+else:
+    p.write_text((text.rstrip('\n') + '\n\n' if text.strip() else '') + block); print('added')
+PY
+)"
+    case "$r" in
+      added) print_step "Guardrails added to ${BOLD}${f}${NC}" ;;
+      refreshed) print_step "Guardrails refreshed in ${BOLD}${f}${NC}" ;;
+      *) KIT_KEPT=$((KIT_KEPT + 1)) ;;
+    esac
+  done
+}
+
+# Secrets live in ~/.config/<being>/ (0700, one <app>.env per app at 0600): outside the repo, never on NTFS/FAT.
+kit_secrets_dir() {
+  local d="$HOME/.config/$BEING_NAME"
+  if [ ! -d "$d" ]; then
+    mkdir -p "$d"
+    print_step "Created secrets folder ${BOLD}${d}${NC} (0700; keep <app>.env files here at 0600)"
+  fi
+  chmod 700 "$d"
+  local fs; fs="$(stat -f -c %T "$d" 2>/dev/null || true)"
+  case "$fs" in ntfs*|fuseblk|vfat|msdos|exfat) print_warn "$d is on $fs: file modes are not enforced; move ~/.config to a Linux filesystem" ;; esac
+}
+
+# Auto-memory (Claude's per-project memory) is an official layer: a live link for Codex, a git snapshot via being-memory-sync.
+kit_auto_memory() {
+  local home; home="$(pwd -P)"
+  local live="$HOME/.claude/projects/$(printf '%s' "$home" | sed 's#[^A-Za-z0-9]#-#g')/memory"
+  mkdir -p "$live"
+  [ -e .beings/auto-memory-live ] || [ -L .beings/auto-memory-live ] || { ln -s "$live" .beings/auto-memory-live; print_step "Linked ${BOLD}.beings/auto-memory-live${NC} → Claude auto-memory (Codex reads it there)"; }
+  kit_ignore ".beings/auto-memory-live"
+}
+
+# One skills folder for both clients: .agents/skills/ (Codex) with .claude/skills pointing at it.
+kit_shared_skills() {
+  mkdir -p .agents/skills
+  [ -f .agents/skills/.gitkeep ] || touch .agents/skills/.gitkeep
+  if [ ! -e .claude/skills ] && [ ! -L .claude/skills ]; then
+    mkdir -p .claude
+    ln -s ../.agents/skills .claude/skills
+    print_step "Shared skills: ${BOLD}.agents/skills/${NC} (Codex) ← ${BOLD}.claude/skills${NC} (Claude Code)"
+  elif [ ! -L .claude/skills ]; then
+    print_info ".claude/skills is a real folder; move its skills to .agents/skills/ and symlink it to share them with Codex"
+  fi
+}
+
+# Status bar for Claude Code on this box; an existing statusLine setting is never replaced.
+kit_statusline() {
+  local dst="$HOME/.claude/beings-statusline.sh" settings="$HOME/.claude/settings.json"
+  mkdir -p "$HOME/.claude"
+  kit_sync_file "templates/kit/statusline.sh" "$dst" exec
+  local r
+  r="$(python3 - "$settings" "bash $dst" <<'PY'
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+d = json.loads(p.read_text()) if p.exists() and p.read_text().strip() else {}
+if d.get('statusLine'):
+    print('kept'); sys.exit(0)
+d['statusLine'] = {'type': 'command', 'command': sys.argv[2]}
+p.write_text(json.dumps(d, indent=2) + '\n'); print('set')
+PY
+)" || r=failed
+  case "$r" in
+    set) print_step "Status line set in ${BOLD}${settings}${NC}" ;;
+    kept) print_info "Status line already configured in ${settings} — kept (kit script: ${dst})" ;;
+    *) print_warn "Could not update ${settings}" ;;
+  esac
+}
+
 # install_kit <fresh launcher?>: run in the Being's home after birth or update.
 install_kit() {
   local fresh="$1"
@@ -1300,12 +1465,43 @@ install_kit() {
   done
   mkdir -p .beings/memory
   kit_launcher "$fresh"
+  for t in "${KIT_BIN_FILES[@]}"; do
+    kit_sync_file "${t%%:*}" "${t#*:}" exec
+  done
+  for t in "${KIT_OPS_TEMPLATES[@]}"; do
+    kit_add "templates/kit/${t%%:*}" "ops/kit-templates/${t#*:}"
+  done
+  chmod +x ops/kit-templates/stack-runner ops/kit-templates/desktop-shim ops/kit-templates/jobs/*/run.sh 2>/dev/null || true
+  kit_ignore "bin/.kit-upgrade/"
   kit_append_section "CLAUDE.md"
   kit_append_section "AGENTS.md"
+  kit_secrets_dir
+  kit_auto_memory
+  kit_shared_skills
+  kit_guardrails_global
+  if [ -n "$CONFIG_FILE" ] && [ ! -e being.toml ] && [ "$CONFIG_FILE" != "$(pwd -P)/being.toml" ]; then
+    cp "$CONFIG_FILE" being.toml
+    print_step "Copied ${BOLD}being.toml${NC} (settings and [access] list; no secrets in it)"
+  fi
+  [ -f CLAUDE.md ] && setup_memory_hooks
   kit_wants teams-kit && kit_teams
+  kit_wants statusline && kit_statusline
+  local c
+  for c in ${WITH_COMPONENTS//,/ }; do
+    case "$c" in operations|teams-kit|statusline|memory-sync) ;; *) kit_component "$c" ;; esac
+  done
+  if kit_wants memory-sync; then
+    if [ "${BEING_NO_SYSTEMD:-0}" != 1 ] && command -v systemctl &>/dev/null && systemctl --user show-environment &>/dev/null; then
+      BEING_NAME="$BEING_NAME" BEING_TZ="${BEING_TZ:-$CONFIG_TZ}" bin/being-memory-sync install || print_warn "memory backup timer not armed"
+    else
+      print_info "Arm the memory backup with: ${BOLD}bin/being-memory-sync install --cron${NC} (no systemd user session here)"
+    fi
+  fi
   echo "$KIT_VERSION" > .beings/.kit-version
   print_step "Operations Kit v${KIT_VERSION}: added ${KIT_ADDED}, kept ${KIT_KEPT} existing"
+  [ -n "$BEING_ACCESS" ] && print_info "Access list (being.toml): ${BEING_ACCESS//,/, } — review with ${BOLD}bin/${BEING_NAME} access${NC}"
   print_info "Next: fill {{…}} placeholders in .beings/GUARDRAILS.md and AUTONOMY-MATRIX.md, review, commit"
+  print_info "Health: ${BOLD}bin/${BEING_NAME} doctor${NC}. Memory backup: ${BOLD}bin/being-memory-sync install${NC} (off until armed)"
   if kit_wants teams-kit; then
     print_info "Teams: cd ops/teams-kit && npm install, then follow its README.md (sign-in, .env, being-teams up)"
   fi
@@ -1334,6 +1530,26 @@ kit_check() {
     if grep -q 'beings-kit:operations' "$f"; then print_step "$f kit section"; else print_warn "$f has no kit section"; fi
   done
   [ -d "ops/teams-kit/.kit-upgrade" ] && print_warn "ops/teams-kit/.kit-upgrade/ has newer kit files to review"
+  [ -d "bin/.kit-upgrade" ] && print_warn "bin/.kit-upgrade/ has newer kit files to review"
+  for f in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/instructions.md"; do
+    if grep -qF "$GUARD_BEGIN" "$f" 2>/dev/null; then print_step "guardrails in $f"; else print_warn "no guardrails block in $f"; fi
+  done
+  # Claude loads only about the first 24 KB of an auto-memory index; the rest is silently cut off.
+  local idx size limit="${BEING_MEMORY_INDEX_MAX:-24000}"
+  idx="$HOME/.claude/projects/$(pwd -P | sed 's#[^A-Za-z0-9]#-#g')/memory/MEMORY.md"
+  for f in "$idx" .beings/MEMORY.md; do
+    [ -f "$f" ] || continue
+    size=$(wc -c < "$f" | tr -d ' ')
+    if [ "$size" -gt "$limit" ]; then print_warn "$f is $size bytes (> ~$limit): entries past the limit are not loaded"
+    else print_step "$f $size bytes (limit ~$limit)"; fi
+  done
+  if [ -x bin/being-memory-sync ]; then
+    print_info "memory backup last success: $(cat .beings/operations/last-success-date 2>/dev/null || echo never)"
+  fi
+  if [ -n "$name" ] && [ -d "$HOME/.config/$name" ]; then
+    local mode; mode="$(stat -c %a "$HOME/.config/$name" 2>/dev/null || stat -f %Lp "$HOME/.config/$name")"
+    if [ "$mode" = 700 ]; then print_step "secrets folder ~/.config/$name (0700)"; else print_warn "~/.config/$name is $mode, should be 0700"; fi
+  fi
   return 0
 }
 
@@ -1636,7 +1852,13 @@ main() {
   local next_is_name=false
   local next_is_with=false
   local next_is_owner=false
+  local next_is_config=false
   for arg in "$@"; do
+    if $next_is_config; then
+      CONFIG_FILE="$arg"
+      next_is_config=false
+      continue
+    fi
     if $next_is_name; then
       BEING_NAME="$arg"
       next_is_name=false
@@ -1649,6 +1871,7 @@ main() {
     fi
     if $next_is_owner; then
       OWNER_NAME="$arg"
+      OWNER_SET=true
       next_is_owner=false
       continue
     fi
@@ -1662,10 +1885,14 @@ main() {
       --with)           next_is_with=true ;;
       --with=*)         WITH_COMPONENTS="${WITH_COMPONENTS:+$WITH_COMPONENTS,}${arg#--with=}" ;;
       --owner)          next_is_owner=true ;;
-      --owner=*)        OWNER_NAME="${arg#--owner=}" ;;
+      --owner=*)        OWNER_NAME="${arg#--owner=}"; OWNER_SET=true ;;
+      --config)         next_is_config=true ;;
+      --config=*)       CONFIG_FILE="${arg#--config=}" ;;
+      --track-private)  TRACK_PRIVATE=true ;;
       --check)          CHECK_MODE=true ;;
     esac
   done
+  load_config
 
   if $CHECK_MODE; then
     kit_check
@@ -1743,7 +1970,11 @@ main() {
     setup_code_intelligence "${detected_tools:-}"
 
     # Step 7: Opt-in components (--with)
-    [ -n "$WITH_COMPONENTS" ] && install_kit false
+    if [ -n "$WITH_COMPONENTS" ]; then
+      install_kit false
+    elif [ -f .beings/.kit-version ]; then
+      kit_guardrails_global   # keep this box's global guardrails in step with .beings/GUARDRAILS.md
+    fi
 
     # Done
     print_update_summary
