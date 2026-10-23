@@ -12,6 +12,8 @@ const PATTERNS = [
   ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
   ['api-key', /\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b/],
   ['env-line', /^\s*(?:export\s+)?(?:BEING|OWNER|M365)_[A-Z0-9_]+=/m],
+  // Cloudflare: tunnel connector token (base64 JSON), Access service-token id/secret, API token assignments, cert.pem.
+  ['cloudflare-token', /\beyJhIjoi[A-Za-z0-9+/_=-]{40,}|\b[0-9a-f]{32}\.access\b|-----BEGIN ARGO TUNNEL TOKEN-----|\b(?:TUNNEL_SERVICE_TOKEN_(?:ID|SECRET)|CF[_-]Access[_-]Client[_-](?:Id|Secret)|CF_API_TOKEN|TUNNEL_TOKEN)\s*[:=]\s*\S{8,}/i],
   ['credential-assignment', /\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)\s*[:=]\s*\S{6,}/i],
 ];
 // Cloudflare API tokens: a lone run of 40 url-safe characters mixing cases and digits, outside links (share ids).

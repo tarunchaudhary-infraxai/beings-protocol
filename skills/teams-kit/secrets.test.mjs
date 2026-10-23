@@ -62,3 +62,14 @@ test('redactCodes masks one-time codes, not dates, times, versions or long numbe
   for (const t of ['2026-10-23 12:30:45', 'v1.234567', 'build 12345678', 'id abc123456', 'call 98765 43210']) assert.equal(redactCodes(t), t, t);
   assert.equal(redactCodes(undefined), '');
 });
+
+test('Cloudflare connector and service tokens are caught, by name only', () => {
+  const secrets = [];
+  const connector = 'eyJhIjoi' + 'QWJjRGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIz' + 'IiwidCI6Ij';
+  assert.ok(findSecrets(`token is ${connector}`, { secrets }).includes('cloudflare-token'));
+  assert.ok(findSecrets('id 0123456789abcdef0123456789abcdef.access', { secrets }).includes('cloudflare-token'));
+  assert.ok(findSecrets('TUNNEL_SERVICE_TOKEN_SECRET=' + 'ab12'.repeat(16), { secrets }).includes('cloudflare-token'));
+  assert.ok(findSecrets('CF-Access-Client-Secret: ' + 'cd34'.repeat(16), { secrets }).includes('cloudflare-token'));
+  assert.ok(findSecrets('-----BEGIN ARGO TUNNEL TOKEN-----', { secrets }).includes('cloudflare-token'));
+  assert.deepEqual(findSecrets('the tunnel nova-box routes nova-ssh and nova-desktop', { secrets }), []);
+});
