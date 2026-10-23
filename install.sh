@@ -1029,13 +1029,29 @@ KIT_TEMPLATES=(GUARDRAILS.md AUTONOMY-MATRIX.md JOB-CHECKLIST.md facts/_TEMPLATE
 # Listed explicitly so a curl install can fetch them; tests/install-kit.test.sh keeps these in sync with git.
 TEAMS_KIT_FILES=(
   .env.example .gitignore GUARDRAILS.md README.md SKILL.md ack-schema.json approval.mjs approval.test.mjs
-  comms-log.mjs fmt.mjs fmt.test.mjs graph.mjs kit-env.mjs kit-env.test.mjs package.json reply-ref.mjs scope.mjs scope.test.mjs secrets.mjs
-  secrets.test.mjs strip.mjs voice-schema.json
+  being-deadman.test.mjs being-job.test.mjs being-retry.test.mjs being-watchdog.test.mjs cache-write.mjs
+  cache-write.test.mjs comms-log.mjs comms-log.test.mjs detect-util.mjs detect-util.test.mjs docs-index.mjs
+  docs-index.test.mjs drive-util.mjs fast-warm.test.mjs fifo-wait.mjs fmt.mjs fmt.test.mjs graph.mjs isolation.test.mjs
+  isolation/README.md isolation/wire-in.patch kit-broker.test.mjs kit-client.mjs kit-env.mjs kit-env.test.mjs
+  link-guard.test.mjs mesh.test.mjs model-proxy.mjs package-lock.json package.json pin.mjs pin.test.mjs reply-ref.mjs
+  routines.conf.example scope.mjs scope.test.mjs secrets.mjs secrets.test.mjs send-as.mjs send-as.test.mjs
+  senders-offline.test.mjs soul.py soul.test.mjs strip.mjs systemd/being-deadman.service.example
+  systemd/being-deadman.timer.example systemd/being-routine@.service.example systemd/being-teams.service.example
+  team-fence.test.mjs teams-channel.test.mjs triage-jobs.test.mjs voice-schema.json webhook/README.md
+  webhook/env.example webhook/graph-webhook.test.mjs webhook/units/graph-lifecycle.path
+  webhook/units/graph-subscribe-renew.service webhook/units/graph-subscribe.service webhook/units/graph-subscribe.timer
+  webhook/units/graph-webhook.service workbook-sync.test.mjs
 )
 TEAMS_KIT_EXEC=(
-  approve.mjs being-blocker being-handle being-job being-status being-teams being-watchdog draft-for-owner.mjs
-  mail.mjs owner-mail owner-read teams-ack.mjs teams-detect.mjs teams-login-device.mjs teams-presence.mjs
-  teams-read.mjs teams-send-dm.mjs teams-fetch-attachment.mjs team-fence.py
+  approve.mjs being-blocker being-board being-deadman being-handle being-job being-launch being-retry being-routine
+  being-sessions being-status being-steer being-teams being-watchdog docs-index-cli.mjs draft-for-owner.mjs
+  fast-warm.mjs hive-mcp-stdio isolation/live-check.sh isolation/make-shims isolation/migrate.sh isolation/model-run
+  isolation/rollback.sh isolation/setup-users.sh isolation/test-sandbox.sh isolation/verify.sh kit-broker link-guard.mjs
+  mail.mjs mesh.py model-relay.mjs offboard.sh onedrive.mjs owner-mail owner-read set-photo.mjs share-file.mjs
+  team-fence.py team-sync teams-ack.mjs teams-channel.mjs teams-delete-msg.mjs teams-detect.mjs
+  teams-fetch-attachment.mjs teams-login-device.mjs teams-presence.mjs teams-read.mjs teams-seen.mjs teams-send-dm.mjs
+  triage-jobs.py verify.sh webhook/graph-subscribe.mjs webhook/graph-webhook.mjs webhook/hook-wait
+  webhook/kit-install.sh whoami.mjs workbook-sync.mjs
 )
 KIT_ADDED=0
 KIT_KEPT=0
@@ -1187,13 +1203,14 @@ kit_teams() {
     tmp="$(mktemp)"
     fetch_or_copy_file "skills/teams-kit/$f" "$tmp"
     if [ ! -e "$dst/$f" ]; then
+      mkdir -p "$(dirname "$dst/$f")"
       mv "$tmp" "$dst/$f"
       KIT_ADDED=$((KIT_ADDED + 1))
     elif cmp -s "$tmp" "$dst/$f"; then
       rm -f "$tmp"
       KIT_KEPT=$((KIT_KEPT + 1))
     else
-      mkdir -p "$dst/.kit-upgrade"
+      mkdir -p "$(dirname "$dst/.kit-upgrade/$f")"
       mv "$tmp" "$dst/.kit-upgrade/$f"
       changed=$((changed + 1))
     fi

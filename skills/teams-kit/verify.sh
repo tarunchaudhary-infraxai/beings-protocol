@@ -43,11 +43,12 @@ check_session() {   # label upn cache scopes required(1|0)
   elif [[ $req == 1 ]]; then bad "$label: $(tail -1 <<<"$out")"
   else warn "$label: $(tail -1 <<<"$out")"; fi
 }
-B_MAIL="${BEING_MAIL_CACHE:-$BEING_CACHE}"
+mail_cache() { local m="$1" base="$2" who="$3"; [[ -n "$m" ]] && { echo "$m"; return; }; [[ -s "$(dirname "$base")/$who-outlook-cache.json" ]] && echo "$(dirname "$base")/$who-outlook-cache.json" || echo "$base"; }
+B_MAIL="$(mail_cache "${BEING_MAIL_CACHE:-}" "$BEING_CACHE" being)"
 check_session "Being Teams" "$BEING_UPN" "$BEING_CACHE" "Chat.ReadWrite,ChatMessage.Send,User.Read" 1
 check_session "Being Outlook" "$BEING_UPN" "$B_MAIL" "Mail.ReadWrite,Mail.Send,User.Read" "$([[ "${BEING_MAIL_WATCH:-0}" == 1 ]] && echo 1 || echo 0)"
 if (( OWNER_ON )); then
-  O_MAIL="${OWNER_MAIL_CACHE:-$OWNER_CACHE}"
+  O_MAIL="$(mail_cache "${OWNER_MAIL_CACHE:-}" "$OWNER_CACHE" owner)"
   for c in "$OWNER_CACHE" "$O_MAIL"; do
     [[ "$(real "$c")" == "$(real "$BEING_CACHE")" || "$(real "$c")" == "$(real "$B_MAIL")" ]] && bad "owner and Being share a token cache ($c): they must be separate sessions"
   done

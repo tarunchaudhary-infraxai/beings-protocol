@@ -5,7 +5,7 @@ import { realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { connect, fail, standby } from './graph.mjs';
-import { kitEnv, ownerDelegate } from './kit-env.mjs';
+import { kitEnv, ownerDelegate, mailCache } from './kit-env.mjs';
 import { currentScope } from './scope.mjs';
 import { logComms } from './comms-log.mjs';
 import { KIT, loadConfig, abilityOn, paused, pauseFile, approversFor } from './oa-config.mjs';
@@ -25,8 +25,8 @@ export function settings(cfg = loadConfig(), env = kitEnv()) {
     state, env, cfg,
     beingUpn: (env.BEING_UPN || '').toLowerCase(), ownerUpn: (env.OWNER_UPN || '').toLowerCase(),
     beingCache: env.BEING_CACHE || '', ownerCache: env.OWNER_CACHE || '',
-    beingProfile: prof(cfg.owner_access?.being_browser_profile, 'state/being-browser'),
-    ownerProfile: prof(cfg.owner_access?.owner_browser_profile, 'state/owner-browser'),
+    beingProfile: prof(cfg.owner_access?.being_browser_profile || env.BEING_BROWSER_PROFILE, 'state/being-browser'),
+    ownerProfile: prof(cfg.owner_access?.owner_browser_profile || env.OWNER_BROWSER_PROFILE, 'state/owner-browser'),
   };
 }
 
@@ -63,9 +63,11 @@ export async function openOwnerAccess(ability, { services, ownerScopes = {} } = 
   const s = preflight(ability, { services });
   const out = { s, being: {}, owner: {} };
   for (const svc of services.filter((x) => x !== 'browser')) {
-    out.being[svc] = await connect({ upn: s.beingUpn, cache: s.beingCache, scopes: SCOPES.being[svc] });
+    const bc = svc === 'outlook' ? (mailCache('being', s.env) || s.beingCache) : s.beingCache;
+    const oc = svc === 'outlook' ? (mailCache('owner', s.env) || s.ownerCache) : s.ownerCache;
+    out.being[svc] = await connect({ upn: s.beingUpn, cache: bc, scopes: SCOPES.being[svc] });
     const scopes = [...new Set([...SCOPES.owner[svc], ...(ownerScopes[svc] || [])])];
-    out.owner[svc] = await connect({ upn: s.ownerUpn, cache: s.ownerCache, scopes });
+    out.owner[svc] = await connect({ upn: s.ownerUpn, cache: oc, scopes });
   }
   return out;
 }

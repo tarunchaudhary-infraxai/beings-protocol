@@ -295,7 +295,8 @@ test('session dumps, kit logs, the send-as caches, owner-access tools and Cloudf
   assert.ok(blocked('Bash', { command: 'ls .beings/sessions' }));
   for (const f of ['state/codex.log', 'state/inbox.jsonl', 'state/send-as/kim@example.test.json'])
     assert.ok(blocked('Bash', { command: `tail -5 ${f}` }), f);
-  for (const c of ['owner-web search budget', 'node owner-channel-posts.mjs', 'ls state/owner-browser/Default', 'owner-forward --list'])
+  for (const c of ['owner-web search budget', 'node owner-channel-posts.mjs', 'ls state/owner-browser/Default', 'owner-forward --list',
+    'node ops/owner-access/shared-mailbox-drafts.mjs --send', 'node channel-posts.mjs', 'cat owner-access.toml', 'node mail-forward-rules.mjs', 'cat state/owner-outlook-cache.json'])
     assert.ok(blocked('Bash', { command: c }), c);
   for (const f of ['~/.cloudflared/cert.pem', '/srv/tokens/cloudflare-tunnel.env', '/opt/org/cf-tokens/zone.txt', 'deploy/secrets.env'])
     assert.ok(blocked('Read', { file_path: f }), f);

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { connect, need, fail, strip, standby, beingSender } from './graph.mjs';
 import { logComms } from './comms-log.mjs';
 import { currentScope } from './scope.mjs';
-import { kitEnv } from './kit-env.mjs';
+import { mailCache, kitEnv } from './kit-env.mjs';
 import { findSecrets, findSecretsInFiles } from './secrets.mjs';
 
 const args = process.argv.slice(2);
@@ -29,7 +29,7 @@ if (has('--send') && standby()) fail('standby host: sending disabled', 3);
 if (has('--send') && process.env.BEING_READ_ONLY) fail('read-only mailbox view', 2);
 // owner-mail reuses this file read-only with the owner's cache; sending is the Being's only.
 if (has('--send')) beingSender();
-const { g } = await connect({ upn: UPN, sender: has('--send'),
+const { g } = await connect({ upn: UPN, sender: has('--send'), cache: mailCache('being', process.env) || need('BEING_CACHE'),
   scopes: has('--send') ? ['Mail.ReadWrite', 'Mail.Send', 'User.Read'] : MBX ? ['Mail.Read.Shared', 'User.Read'] : ['Mail.Read', 'User.Read'] });
 const addr = (r) => r?.emailAddress?.address || '';
 const SEL = '$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,bodyPreview,hasAttachments';

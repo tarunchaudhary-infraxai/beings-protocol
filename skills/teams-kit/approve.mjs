@@ -11,7 +11,7 @@ import { logComms } from './comms-log.mjs';
 import { toHtml } from './fmt.mjs';
 import { findSecrets } from './secrets.mjs';
 import { MAX_AGE_H, chatLabel, checkCommand, checkPrompt, parseCommand, replyRecipients } from './approval.mjs';
-import { kitEnv, ownerDelegate } from './kit-env.mjs';
+import { mailCache, kitEnv, ownerDelegate } from './kit-env.mjs';
 import { sendAsAccount } from './send-as.mjs';
 
 const argv = process.argv.slice(2);
@@ -52,7 +52,7 @@ if (AS) {
 } else if (!ownerDelegate(kenv)) stop(`No owner sign-in on this host, so I cannot send ${id} as you; copy it from the prompt and send it yourself.`);
 const { g, me } = AS
   ? await connect({ upn: need('BEING_UPN'), scopes: ['Chat.ReadWrite', 'User.Read'] })
-  : await connect({ upn: OWNER, cache: kenv.OWNER_CACHE,
+  : await connect({ upn: OWNER, cache: isMail ? (mailCache('owner', kenv) || kenv.OWNER_CACHE) : kenv.OWNER_CACHE,
     scopes: isMail ? ['Mail.Send', 'Mail.ReadWrite', 'Chat.ReadWrite', 'User.Read'] : ['Chat.ReadWrite', 'ChatMessage.Send', 'User.Read'] });
 if (!AS && me.id !== OWNER_OID) stop(`Owner sign-in does not match OWNER_OID; nothing sent.`);
 

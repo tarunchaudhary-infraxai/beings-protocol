@@ -42,10 +42,21 @@ export const ownerDelegate = (env = kitEnv()) => env.BEING_OWNER_DELEGATE === '1
 export function ownerMatch({ upn, cache, oid } = {}, env = kitEnv()) {
   const lc = (x) => String(x || '').trim().toLowerCase();
   const upns = [env.OWNER_UPN, process.env.OWNER_UPN].map(lc).filter(Boolean);
-  const caches = [env.OWNER_CACHE, process.env.OWNER_CACHE].filter(Boolean).map(real);
+  const caches = [env.OWNER_CACHE, process.env.OWNER_CACHE, env.OWNER_MAIL_CACHE, process.env.OWNER_MAIL_CACHE,
+    mailCache('owner', { ...env, ...process.env })].filter(Boolean).map(real);
   const oids = [env.OWNER_OID, process.env.OWNER_OID].map(lc).filter(Boolean);
   if (upn && upns.includes(lc(upn))) return 'upn';
   if (cache && caches.includes(real(cache))) return 'cache';
   if (oid && oids.includes(lc(oid))) return 'oid';
   return null;
+}
+
+// Outlook session file: *_MAIL_CACHE, else the separate default next to the Teams cache, else the Teams cache (older installs).
+export function mailCache(who = 'being', env = { ...kitEnv(), ...process.env }) {
+  const P = who === 'owner' ? 'OWNER' : 'BEING';
+  if (env[`${P}_MAIL_CACHE`]) return env[`${P}_MAIL_CACHE`];
+  const base = env[`${P}_CACHE`];
+  if (!base) return '';
+  const sep = path.join(path.dirname(base), `${who === 'owner' ? 'owner' : 'being'}-outlook-cache.json`);
+  return existsSync(sep) ? sep : base;
 }

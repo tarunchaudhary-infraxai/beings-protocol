@@ -18,8 +18,8 @@ PERSONAL = "|".join(re.escape(w.lower()) for w in [(os.environ.get("OWNER_NAME")
                     os.environ.get("BEING_FENCE_PERSONAL_WORDS", "").split(",") if w.strip()) or "(?!)"
 PERSONAL = PERSONAL + "|personal|family|health|journey|salary|appraisal"
 OWNER_FILES = r"\b(?:MEMORY|USER|DECISIONS|AUTONOMY|GOALS|ORG)\.md\b"
-# The owner's browser profile (owner-access web sign-in): BEING_OWNER_BROWSER_DIR, plus the default folder names.
-BROWSER = [re.escape(p.rstrip("/")) for p in [os.environ.get("BEING_OWNER_BROWSER_DIR", "")] if p.strip()]
+# The owner's browser profile (owner-access web sign-in): OWNER_BROWSER_PROFILE (or BEING_OWNER_BROWSER_DIR), plus default names.
+BROWSER = [re.escape(p.rstrip("/")) for p in [os.environ.get("OWNER_BROWSER_PROFILE", ""), os.environ.get("BEING_OWNER_BROWSER_DIR", "")] if p.strip()]
 DENY = [
     (re.escape(PRIV.rstrip("/")), "private owner files"),
     (OWNER_FILES, "the owner's memory and decisions"),
@@ -41,6 +41,7 @@ DENY = [
     (r"\b(?:comms\.jsonl|owner-inbox|owner-watermark|token-cache[\w-]*|handler\.key|grants/|handler\.log|codex\.log|inbox\.jsonl|send-as/)", "kit state"),
     (r"\b(?:owner-read|owner-mail|draft-for-owner|approve\.mjs|scope\.mjs)\b", "owner tools"),
     (r"\bowner-(?:web|browser|access|channel[\w-]*|forward[\w-]*)\b", "owner tools"),
+    (r"\b(?:shared-mailbox-drafts|shared-inbox-monitor|channel-posts|mail-forward-rules|owner-session|oa-config|go-approval)(?:\.mjs|\.sh)?\b|\bowner-access\.toml\b|outlook-cache[\w-]*", "owner tools"),
     (r"/proc/[\w$]+/environ", "process environment"),
 ] + [(p, "the owner's browser profile") for p in BROWSER] + [(p.strip(), "private (BEING_FENCE_DENY)") for p in EXTRA]
 # memory-graph is shared work knowledge (designs of the Being's own systems included), except notes about the owner as a
