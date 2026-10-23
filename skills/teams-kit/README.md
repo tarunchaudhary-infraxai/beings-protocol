@@ -28,9 +28,10 @@ for the day without one person's run ever resuming another's. Teammate runs are 
 | `being-handle` | `triage / work / voice / warm` stages; all prompt text lives here |
 | `fast-warm.mjs` | long-lived fast-model process per lane for triage and voice (being-teams runs it; cold call as fallback) |
 | `fifo-wait.mjs` | trigger FIFO for the pre-connected fast-path standbys |
-| `being-job` | `agent / codex / run` background jobs; `list / status / log` |
+| `being-job` | `agent / codex / run` background jobs; `list / status / log / stop` |
 | `being-blocker` | tell the owner at once that something is blocked |
 | `being-watchdog`, `being-status` | stall alerts; live "what is running" view (also fed to triage) |
+| `triage-jobs.py` | compact running + recently finished job list for the triage snapshot |
 | `being-sessions`, `being-steer`, `being-board`, `mesh.py` | session mesh: named live sessions, steering (live or a durable note), today's board |
 | `teams-*.mjs`, `mail.mjs` | Graph calls: detect, read, send, ack, presence, mailbox |
 | `draft-for-owner.mjs`, `approve.mjs`, `approval.mjs` | write as the owner only via a draft the owner approves in Teams |
@@ -168,8 +169,13 @@ being-job codex <name> [--network] --notify <chatId> "<task>"               Code
     BEING_JOB_ADD_DIRS=/a:/b   extra dirs Codex may write (e.g. a repo worktree)
 being-job run <name> --notify <chatId> -- <command...>                     a plain command
 being-job list | status <id> | log <id> [n]     from a teammate chat's run: only that chat's own jobs (others exit 3)
-being-status [--actions N] [--triage] [--chat <chatId>]   live view incl. Sessions and Board; --triage: sessions as one line
-    (owner triage); --chat: that chat's queue, jobs, sessions and board lines only (fed to its triage)
+being-job stop <id> [reason]     intentional cancel: marked stopped first (no watchdog alert, no completion event), then its
+    process group is killed and its grant revoked. Same visibility rule as status.
+being-status [--actions N] [--triage] [--chat <chatId>] [--no-jobs]   live view incl. Sessions and Board; --triage: sessions
+    as one line (owner triage); --chat: that chat's queue, jobs, sessions and board lines only (fed to its triage). Running
+    jobs come first with their last output line; a run's latest actions include its sub-agents'.
+triage-jobs.py [--chat <chatId>] [--hours H] [--max N]   running jobs, then jobs finished in the last H hours with their
+    first result line; being-handle adds it to every triage snapshot (--chat: that lane's jobs only, by the signed scope)
 being-sessions [--all] [--json]     live sessions: name, kind (work/warm/job/heartbeat/other), lane, pid, state alive|idle|ended
     Names: nova-owner, nova-team-<first name>, nova-delegate, nova-warm-<lane>, nova-job-<name>, nova-heartbeat (prefix =
     BEING_NAME). Registry state/sessions.json, written at launch/exit by being-handle, being-job and fast-warm.mjs, checked by pid.
@@ -182,6 +188,8 @@ being-blocker "<task>" "<what failed, with the exact error>" "<what you need fro
 being-teams doctor     file modes; FAIL (exit 1) on a same-user host, louder if an owner token is readable, or if the
                        model user can reach .env, caches, grants or the handler key. WARN instead with
                        BEING_SINGLE_USER_ACK=1 and no owner sign-in
+being-handle quiet on|off|status | owner-alias add <chatId> <hours> | remove <chatId> | list
+    optional features (Script notes); setting them needs an interactive shell or the owner lane's full grant
 being-handle warm | triage | work | work-lane <lane> | voice
     triage: queue.jsonl → owner decisions to approve.mjs → one fast-model call per chat, in its lane's session → acks → work.jsonl
             (fast client: no file tools, empty working directory; everything it needs is in the prompt: LIVE STATE from
@@ -196,6 +204,32 @@ being-handle warm | triage | work | work-lane <lane> | voice
 ## Script notes
 
 Details moved out of the script headers, so comments stay short.
+
+- **Codex fallback.** When Claude stops with its session or usage-limit message (`BEING_LIMIT_PATTERN`), an owner-lane work
+  run is repeated as `codex exec` (workspace-write, network on) with the same prompt and the same grant, and an owner-lane
+  agent job is restarted as a Codex job with the same task, name and notify chat (`<id>-fb`; the original is marked
+  `limit-fallback` and sends no completion event). Teammate lanes never fall back: their fence is a Claude hook Codex does
+  not run; the run fails and goes to retry. `BEING_WORK_FALLBACK=off` turns it off. `BEING_CLAUDE_BIN` / `BEING_CODEX_BIN`
+  pick the clients.
+- **Session names.** Claude sessions carry readable names (being-sessions). Codex threads the kit starts (the fast codex
+  thread, codex jobs, fallback runs) are labelled `<date> <session name>` in Codex's thread index
+  (`BEING_CODEX_THREAD_NAMES=0` turns that off).
+- **being-watchdog.** A job whose process tree only waits (sleep or flock in a shell loop, e.g. queued behind other jobs) is
+  not alerted on. Alerts name the last tool action from the transcript; a run job that resumes a Claude session
+  (`--resume <id>` in its command) is followed through that session's transcript.
+- **being-teams at boot.** `autostart on` also enables linger (`loginctl enable-linger`; a warning if that is not allowed),
+  so the unit starts without a login; `autostart status` shows it. The unit waits up to `BEING_START_WAIT_SEC` (120) for the
+  kit path, for a kit on a disk that mounts late. The loop waits up to `BEING_NTP_WAIT_SEC` (300) for NTP when the clock is
+  behind the last sweep (`BEING_NTP_WAIT=auto`; `always` / `off`). A failed presence refresh is retried on the next tick.
+- **Quiet mode (optional, `BEING_QUIET_MODE=1`).** `being-handle quiet on` (for example after the daily standup) marks
+  today quiet (`state/quiet/<date>`): messages from anyone but the owner get no ack and no run; they are held in
+  `state/carryover/<next day>.jsonl` and run in their own lane on the next day (marked `carriedOver`). The owner's messages,
+  job results and notes run as usual; delegate drafts wait. `quiet off` ends it for today.
+- **Owner alias (optional, `BEING_OWNER_ALIAS=1`).** For a time-boxed window the owner can type from another person's 1:1
+  with the Being: `being-handle owner-alias add <chatId> <hours>` (capped at `BEING_OWNER_ALIAS_MAX_H`, default 12) puts
+  that chat's messages in the owner lane, marked `ownerAlias`, and the reply goes to that chat. Draft approvals
+  (`send Dn`) still need the owner's own account. Anyone in that chat counts as the owner until it expires, so keep the
+  window short and `remove` it when done.
 
 - **being-handle locks.** Shared files keep their own flock: `work-queue.lock` (work.jsonl and the lane inboxes),
   `enqueue.lock` (queue.jsonl), `voice.lock` (the outbox flush), the sessions/notes/board locks (mesh.py) and

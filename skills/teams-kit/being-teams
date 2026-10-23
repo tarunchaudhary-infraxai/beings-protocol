@@ -143,11 +143,32 @@ fastpath() {
   done
 }
 
+ntp_wait() {   # after a power cut the clock can boot far off: wait (bounded) for NTP so TLS and watermarks are sane
+  local max=${BEING_NTP_WAIT_SEC:-300} i last
+  [[ ${BEING_NTP_WAIT:-auto} != off && $max =~ ^[0-9]+$ ]] && (( max > 0 )) && command -v timedatectl >/dev/null || return 0
+  # auto (default): only when the clock is behind the last sweep; always: whenever NTP is not synced yet
+  last=$(date -d "$(cat "$WM" 2>/dev/null)" +%s 2>/dev/null || echo 0)
+  [[ ${BEING_NTP_WAIT:-auto} == always ]] || (( $(date +%s) < last )) || return 0
+  for (( i = 0; i < max; i += 5 )); do
+    [[ $(timedatectl show -p NTPSynchronized --value 2>/dev/null) == yes ]] && return 0
+    sleep 5
+  done
+  echo "$(ts) clock not NTP-synced after ${max}s; starting anyway" >>"$LOG"
+}
+carryover_due() {   # quiet mode held messages for a day that has come (being-handle work takes them in)
+  [[ ${BEING_QUIET_MODE:-0} == 1 && ! -e "$STATE/quiet/$(date +%F)" ]] || return 1
+  local f today; today=$(date +%F)
+  for f in "$STATE"/carryover/*.jsonl; do [[ -s $f && ! $(basename "$f" .jsonl) > $today ]] && return 0; done
+  return 1
+}
+linger() { loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || echo unknown; }
+
 loop() {
   cd "$KIT"
+  ntp_wait
   [[ -s "$WM" ]] || date -u +%FT%TZ >"$WM"
   [[ -s "$MWM" ]] || date -u +%FT%TZ >"$MWM"
-  local n=0 start out rc oout orc mrc
+  local n=0 start out rc oout orc mrc pfail=0
   [[ -s "$STATE/hook-offset" ]] || stat -c %s "$HOOK/queue.jsonl" >"$STATE/hook-offset" 2>/dev/null || true
   KSEEN=$(cat "$KICK" 2>/dev/null || true)
   fastpath &
@@ -157,8 +178,8 @@ loop() {
     if [[ "${BEING_FAST_CLIENT:-codex}" == codex && ! -s "$STATE/fast-daily/$(date +%F).id" ]] && (( n % 20 == 0 )); then
       setsid "$KIT/being-handle" warm </dev/null >/dev/null 2>&1 &
     fi
-    if (( n % PRESENCE_EVERY == 0 )); then
-      node teams-presence.mjs available >/dev/null 2>>"$LOG" || echo "$(date -Is) presence refresh failed" >>"$LOG"
+    if (( n % PRESENCE_EVERY == 0 || pfail )); then   # a failed refresh is retried on the next tick
+      if node teams-presence.mjs available >/dev/null 2>>"$LOG"; then pfail=0; else pfail=1; echo "$(date -Is) presence refresh failed" >>"$LOG"; fi
     fi
     start=$(date -u +%FT%TZ)
     set +e; out=$(node teams-detect.mjs "$(cat "$WM")" 2>>"$LOG"); rc=$?; set -e
@@ -193,11 +214,13 @@ loop() {
     # warm restarts only the lanes whose prompt changed (soul.py digest key), and skips the run while triage holds its lock.
     warm_on && (( n % 2 == 1 )) && { setsid "$KIT/being-handle" warm </dev/null >/dev/null 2>&1 & }
     (( n % 120 == 0 )) && { node scope.mjs prune >/dev/null 2>>"$LOG" || true; }
+    (( n % 20 == 0 )) && carryover_due && { setsid "$KIT/being-handle" work </dev/null >/dev/null 2>&1 & }
     n=$((n + 1)); nap || true
   done
 }
 
-write_unit() {
+write_unit() {   # the unit file lives on the root disk; the kit may sit on a disk that mounts later
+  local wait=${BEING_START_WAIT_SEC:-120}; [[ $wait =~ ^[0-9]+$ ]] || wait=120
   mkdir -p "$(dirname "$UNITF")"
   cat >"$UNITF" <<UNIT
 [Unit]
@@ -208,6 +231,9 @@ StartLimitIntervalSec=0
 Type=simple
 Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=$HOME
+# Waits (bounded) for the kit path; \$\$ is a literal \$ for systemd.
+ExecStartPre=/bin/sh -c 'for i in \$\$(seq $wait); do [ -x "$KIT/being-teams" ] && [ -r "$KIT/.env" ] && exit 0; sleep 1; done; echo "kit not found: $KIT" >&2; exit 1'
+TimeoutStartSec=$((wait + 60))
 ExecStart=$KIT/being-teams __run
 # Stops the loop's process group only; handler runs and jobs (own sessions) finish their work.
 ExecStop=$KIT/being-teams __stop
@@ -308,10 +334,14 @@ for l in sys.stdin:
   autostart)
     case "${2:-status}" in
       on)  write_unit; systemctl --user daemon-reload; systemctl --user enable "$UNIT" >/dev/null
+           # Linger: the user manager (and this unit) starts at boot, without a login session.
+           if [[ $(linger) != yes ]] && ! loginctl enable-linger "$(id -un)" 2>/dev/null; then
+             echo "warning: could not enable linger; the unit starts only after a login (run: sudo loginctl enable-linger $(id -un))" >&2
+           fi
            if alive && ! systemctl --user is-active -q "$UNIT"; then loop_cleanup; fi
            systemctl --user start "$UNIT"; "$0" autostart status ;;
       off) systemctl --user disable "$UNIT" >/dev/null 2>&1 || true; echo "autostart off (loop left as is)" ;;
-      status) echo "unit: $(systemctl --user is-enabled "$UNIT" 2>/dev/null || echo not-installed) / $(systemctl --user is-active "$UNIT" 2>/dev/null || true)" ;;
+      status) echo "unit: $(systemctl --user is-enabled "$UNIT" 2>/dev/null || echo not-installed) / $(systemctl --user is-active "$UNIT" 2>/dev/null || true) · linger: $(linger)" ;;
       *) echo "usage: being-teams autostart on|off|status"; exit 2 ;;
     esac ;;
   __loop) loop ;;
