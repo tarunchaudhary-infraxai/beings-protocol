@@ -126,3 +126,11 @@ scripts, and `BEING_MODEL_USER=<being>-model` in `.env`. A Being that cannot get
 `BEING_SINGLE_USER_ACK=1` with the owner sign-in off: doctor then warns instead of failing, and teammate lanes run **without**
 skipped permissions, limited to the `BEING_TEAM_TOOLS` allowlist (read tools, the kit senders, read-only git/gh) on top of
 the fence. Owner-lane runs are unchanged. The guarantees stay "mistakes only".
+
+## Separate sessions (Being and owner)
+The Being and the owner are each signed in, in their own headless sessions, for **Teams and for Outlook**: the Being's API
+token cache (`BEING_CACHE`, chat + mail scopes) and browser profile (`state/being-browser/`, Teams web + Outlook web), and
+the owner's separate cache (`OWNER_CACHE`) and profile (`state/owner-browser/`). Never the same file, never copied, merged or
+used as a fallback, never copied to another box. Every as-owner tool checks who-am-I for the service it uses, for both
+identities, before acting; owner access for Teams or Outlook stays off until both sessions for that service are signed in.
+The owner signs in themselves. Teammate lanes can use neither owner session. Details: `OWNER-ACCESS.md` (owner-access).

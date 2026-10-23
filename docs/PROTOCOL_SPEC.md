@@ -508,3 +508,19 @@ Current version: **0.2.1**
 
 *The Beings Protocol is an open standard. Contributions welcome.*
 *Last updated: 2026-04-27*
+
+---
+
+## Appendix: Separate Sessions for the Being and the Owner
+
+A Being that may act with its owner's account (the optional owner-access component, see [ACCESS.md](ACCESS.md)) keeps
+**two identities in separate headless sessions**, for Teams and for Outlook alike:
+
+- The Being has its own signed-in sessions: an API token cache (chat and mail scopes) and its own browser profile for Teams
+  web and Outlook web. The owner has their own, separate token cache and browser profile.
+- The two never share, merge, copy or fall back to each other's files; folders are named `being-...` / `owner-...` and
+  readable only by the kit user.
+- Before every action, each tool checks who-am-I for the service it is about to use (Teams or Outlook) and refuses if the
+  account is not the one that session belongs to.
+- Owner access for a service stays off until both the Being's and the owner's sessions for that service are signed in.
+- The owner signs in themselves; the Being never sees the owner's password. Sessions are never copied between boxes.
