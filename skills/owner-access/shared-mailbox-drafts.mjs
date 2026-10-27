@@ -109,7 +109,7 @@ try {
       const k = draftKey(r.subject, r.to);
       if (existing.has(k)) { console.log(`SKIP (draft exists): ${r.to.join('; ')} | ${r.subject}`); continue; }
       const rc = (l) => l.map((x) => ({ emailAddress: { address: x } }));
-      const m = await g(`${ROOT}/messages`, { headers: H, body: { subject: r.subject, body: { contentType: 'html', content: r.html },
+      const m = await g(`${ROOT}/messages`, { method: 'POST', headers: H, body: { subject: r.subject, body: { contentType: 'html', content: r.html },
         toRecipients: rc(r.to), ccRecipients: rc(r.cc), from: { emailAddress: { address: MAILBOX } }, ...(a && { attachments: [a] }) } });
       appendFileSync(OWN_F, JSON.stringify({ id: m.id, subject: r.subject, to: r.to, at: new Date().toISOString() }) + '\n', { mode: 0o600 });
       existing.add(k); access.own.add(m.id);

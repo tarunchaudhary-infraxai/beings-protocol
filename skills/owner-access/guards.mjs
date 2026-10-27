@@ -86,6 +86,8 @@ export function forwardRoute(url, method, { readIds = new Set(), forwardId = nul
 export function guardedGraph(token, allow, fetcher = fetch, base = GRAPH) {
   return async (url, { method = 'GET', body, headers = {}, raw = false, allow404 = false } = {}) => {
     const full = url.startsWith('https://') ? url : `${base}${url}`;
+    // A body with the default GET is a caller bug (a create sent as a read); fail loudly, never send it.
+    if (body !== undefined && ['GET', 'HEAD'].includes(method)) throw new Error(`refused: ${method} with a body; pass the intended method`);
     if (!allow(full, method)) throw new Error(`refused: ${method} ${full.replace(base, '').split('?')[0]} is outside this tool's allowlist`);
     const isBuf = Buffer.isBuffer(body);
     const r = await fetcher(full, { method, redirect: 'error', headers: { Authorization: `Bearer ${token}`,

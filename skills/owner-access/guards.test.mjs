@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isM365Host, isLoginUrl, browserRequestAllowed, inboxReadRoute, draftsRoute, channelRoute, forwardRoute, guardedGraph } from './guards.mjs';
+import { isM365Host, isLoginUrl, browserRequestAllowed, inboxReadRoute, draftsRoute, channelRoute, forwardRoute, guardedGraph, OUTLOOK_API } from './guards.mjs';
 
 const G = 'https://graph.microsoft.com/v1.0';
 const MB = 'team@example.com', R = `${G}/users/${encodeURIComponent(MB)}`;
@@ -51,6 +51,24 @@ test('drafts: create and edit own drafts; send only approved ids; never delete, 
   assert.ok(draftsRoute(MB, `${R}/mailFolders/sentitems/messages`, 'GET', { own, sentItems: true }));
 });
 
+test('drafts: encoded and plain mailbox paths match alike on both routes; other mailboxes never', () => {
+  for (const base of [G, OUTLOOK_API]) {
+    for (const seg of [encodeURIComponent(MB), MB, MB.toUpperCase()]) {
+      const root = `${base}/users/${seg}`;
+      assert.ok(draftsRoute(MB, `${root}/messages`, 'POST', { base }), `${base} create ${seg}`);
+      assert.ok(draftsRoute(MB, `${root}/mailFolders/drafts?$select=id`, 'GET', { base }), `${base} folder ${seg}`);
+      assert.ok(draftsRoute(MB, `${root}/mailFolders/drafts/messages?$top=100`, 'GET', { base }), `${base} list ${seg}`);
+      assert.ok(!draftsRoute(MB, `${root}/messages`, 'GET', { base }), 'no mailbox-wide read');
+      assert.ok(!draftsRoute(MB, `${root}/mailFolders/inbox/messages`, 'GET', { base }), 'no inbox read');
+    }
+    for (const other of ['other%40example.com', 'other@example.com', 'team%40example.com.evil.io']) {
+      const root = `${base}/users/${other}`;
+      assert.ok(!draftsRoute(MB, `${root}/messages`, 'POST', { base }), `${base} create in ${other}`);
+      assert.ok(!draftsRoute(MB, `${root}/mailFolders/drafts/messages`, 'GET', { base }), `${base} read ${other}`);
+    }
+  }
+});
+
 test('channel posts: one channel, its folder only, no path escapes', () => {
   const w = { team: 'T1', channel: '19:abc@thread.tacv2', driveId: 'D1', folderId: 'F1' };
   const CH = `${G}/teams/T1/channels/${encodeURIComponent(w.channel)}`;
@@ -82,6 +100,8 @@ test('guardedGraph refuses before anything reaches the network', async () => {
   const g = guardedGraph('t', () => false, async () => { calls++; return new Response('{}'); });
   await assert.rejects(g('/me/sendMail', { method: 'POST', body: {} }), /outside this tool's allowlist/);
   assert.equal(calls, 0);
+  await assert.rejects(guardedGraph('t', () => true, async () => { calls++; })('/users/x/messages', { body: { subject: 's' } }), /GET with a body/);
+  assert.equal(calls, 0, 'a create sent without method POST never reaches the network');
   const ok = guardedGraph('t', () => true, async (url, init) => { calls++; assert.equal(init.redirect, 'error'); return new Response('{"a":1}'); });
   assert.deepEqual(await ok('/me'), { a: 1 });
   assert.equal(calls, 1);
