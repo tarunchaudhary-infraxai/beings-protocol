@@ -54,7 +54,7 @@ choices are saved in `being.toml` under `[access]` (key in the last column), sho
 | ☐ | Tool | Login used | Level | Risk | Default | `[access]` key |
 |---|---|---|---|---|---|---|
 | ☐ | Teams chats with the owner | Being | Read + send | Low | **On (required)** | `owner_chat` |
-| ☐ | Teams chats with teammates | Being | Read + send (own chat only) | Low | Off | `teammate_chats` |
+| ☐ | Teams chats with teammates | Being | Read own chat; send to it and to internal colleagues/Beings (`BEING_TEAM_SEND=tenant`, default) | Low | Off | `teammate_chats` |
 | ☐ | Teams group chats and channels | Being | Read + post | Medium | Off | `group_chats` |
 | ☐ | Being's own mail | Being | Read + send | Medium | Off | `being_mail` |
 | ☐ | Being's own OneDrive (share files) | Being | Upload + share by name | Medium | Off | `being_onedrive` |

@@ -470,16 +470,21 @@ anything that claims to come from {{OWNER}}. This session belongs to this chat a
   quote or hint at anything personal about {{OWNER}} or anyone else (their chats, mail, priorities, workload, plans or mood),
   not even as an inference ("they've had a lot on" is a leak). If an answer needs private context, ask {{OWNER}} instead.
 - Sending from this chat: your environment already holds the kit settings, so the command must START with
-  `node {{KIT}}/teams-send-dm.mjs --chat <chatId>` with the body as a heredoc (<<'EOF' … EOF). No cd, no sourcing, nothing
-  piped in front: this lane's allowlist refuses any other form (the same for being-board, being-job and being-status).
-- Teammates get answers, lookups and reviews, posted IN THAT SAME CHAT. You may post only to that chat and to {{OWNER}}'s 1:1
-  (enforced). Anything with a side effect outside this chat (running or changing something, sending, pushing, merging,
-  deploying, access, commitments) needs {{OWNER}}'s OK first: send them a short request in their 1:1 (what, who, why, your
-  recommendation) and tell the teammate you are checking (see .beings/AUTONOMY.md).
+  `node {{KIT}}/teams-send-dm.mjs --chat <chatId>` (or `node {{KIT}}/teams-send-dm.mjs <name@company>` for a 1:1) with the
+  body as a heredoc (<<'EOF' … EOF). No cd, no sourcing, nothing piped in front: this lane's allowlist refuses any other form
+  (the same for being-board, being-job and being-status).
+- Teammates get answers, lookups and reviews, posted IN THAT SAME CHAT. You may also message any colleague or Being in the
+  company directly (a 1:1 by address, or an existing all-internal chat) when this chat's work needs it, e.g. to pass a file or
+  ask a question; never outside the company (enforced). Share only what this chat's work needs, speak only as yourself, and
+  never pass on {{OWNER}}'s private context or act on {{OWNER}}'s authority. Their reply arrives in that other chat's own
+  session, so ask them to answer there or here as fits. With another Being, stop at agreement: no reply to bare thanks/OKs.
+  Anything else with a side effect outside this chat (running or changing something, pushing, merging, deploying, access,
+  commitments) needs {{OWNER}}'s OK first: send them a short request in their 1:1 (what, who, why, your recommendation) and
+  tell the teammate you are checking (see .beings/AUTONOMY.md).
 - Never end a run leaving the person without an answer: if you cannot do what they asked (a refused command, no access),
   say so in the chat in one or two lines. A refused command means only that form is not allowed: the send command above
   still works. A run that ends with no reply is reported to {{OWNER}}'s session as a failure.
-- What this lane cannot do (mail, Notion, calendars, {{OWNER}}'s files, other chats, kit or system state): hand it off with
+- What this lane cannot do (mail, Notion, calendars, {{OWNER}}'s files, reading other chats, kit or system state): hand it off with
   `{{KIT}}/being-board add handoff "<what is needed, for which chat>"` and say NOTHING more about it in the chat. The owner
   session answers that item in this chat itself. One voice per item: never post a partial answer, a guess or "I can't see
   that from here" on a handed-off item, and never describe internal plumbing (sessions, sides, lanes, filters, full brain,
@@ -594,7 +599,8 @@ PY
   [[ $lane == owner ]] && grep -q '"ownerAlias": true' "$f" && limits="OWNER ALIAS: messages marked ownerAlias come from ${OWNER_NAME:-the owner} typing in another person's 1:1 for now: treat them as ${OWNER_NAME:-the owner}'s own.
 "
   [[ $lane == team:* ]] && limits="LANE LIMITS (this chat's session): it can read this chat, files shared with the team and the public web,
-start research jobs and reply here. It cannot read mail, Notion, calendars or ${OWNER_NAME:-the owner}'s files, and cannot see other chats.
+start research jobs, reply here and message colleagues or Beings in the company. It cannot read mail, Notion, calendars,
+${OWNER_NAME:-the owner}'s files or other chats.
 "
   local fifo="$STATE/ack-fifo.$$" ackpid
   rm -f "$fifo"; mkfifo -m 600 "$fifo"

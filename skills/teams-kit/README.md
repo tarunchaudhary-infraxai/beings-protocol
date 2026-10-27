@@ -146,6 +146,7 @@ teams-send-dm.mjs --as <upn> --draft <Dn>     (off unless BEING_ALLOW_SEND_AS=1;
     teams-login-device.mjs). The account must be in BEING_SEND_AS_UPNS and not the owner; the approval is used once,
     within 10 minutes. state/send-as.stop pauses it.
     Scope comes from the grant named by BEING_SEND_TOKEN (scope.mjs): full | owner-only | chats:<id>,<id>.
+    A chats: (teammate) run may also post to internal colleagues and Beings (team-scope.mjs, BEING_TEAM_SEND=tenant|chat).
     No grant = owner-only; a bad or expired one = none (refused). Blocked target, a prompt fingerprint or secret-looking text: exit 3, nothing sent.
     With BEING_VOICE=fast the message is queued in $BEING_STATE_DIR/outbox and sent after the voice pass.
 teams-ack.mjs [--preconnect] < {"messages":[detect hits],"actions":[{chatId,messageId,action,text,answered,needsWork,emoji}]}

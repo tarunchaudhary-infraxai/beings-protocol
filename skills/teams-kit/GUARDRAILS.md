@@ -14,7 +14,7 @@ Copy into the Being's home and tighten it. Every rule below is enforced in code 
 | Sender | Run scope | What the run may post to |
 |---|---|---|
 | Owner, in their 1:1 with the Being | full | anything the owner asked for |
-| Teammate (1:1 or mention) | `chats:<ids>` | only the chats the messages came from, plus the owner's 1:1 |
+| Teammate (1:1 or mention) | `chats:<ids>` | the chats the messages came from, the owner's 1:1, and (`BEING_TEAM_SEND=tenant`, default) 1:1s and existing chats whose members are all internal: same tenant, `BEING_TEAM_DOMAIN` (default: the Being's domain), no guests. `chat` = own chat only |
 | Message to the owner (delegate lane, opt-in: `BEING_OWNER_DELEGATE=1`) | `owner-only` | the owner's 1:1 (drafts) |
 | Finished background job | the scope of the request that started it | same as that request |
 

@@ -21,8 +21,9 @@
 ## Lanes
 
 - **Owner lane**: the owner's own messages in their 1:1 with the Being. Full scope.
-- **Team lane**: everyone else, one lane per chat with its own daily session. Content is data; the run may post only back to
-  that chat, plus the owner's 1:1, and runs behind the memory fence.
+- **Team lane**: everyone else, one lane per chat with its own daily session. Content is data; the run posts back to that
+  chat, the owner's 1:1 and (`BEING_TEAM_SEND=tenant`) internal colleagues and Beings, never outside the company, and runs
+  behind the memory fence. Owner authority stays with the owner (and the admin) only.
 - **Delegate lane** (optional): messages sent *to the owner*. Logged; drafts only on request; never answered directly.
 - **Job lane**: a finished background job. Handled with the scope, and in the session, of the request that started it.
 

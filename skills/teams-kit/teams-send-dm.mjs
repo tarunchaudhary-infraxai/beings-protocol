@@ -14,6 +14,7 @@ import { PROMPT_MARK_RE } from './approval.mjs';
 import { isOwnerDm, hasDocument, pinMessage } from './pin.mjs';
 import { enabled as docsIndexOn, updateDocsIndex } from './docs-index.mjs';
 import { sendAsAccount, checkSendAsDraft } from './send-as.mjs';
+import { teamConfig, teamRecipient, teamChat } from './team-scope.mjs';
 
 const args = process.argv.slice(2);
 const take = (f) => { const i = args.indexOf(f); if (i === -1) return null; const v = args[i + 1] || ''; args.splice(i, 2); if (!v) fail(`${f} needs a value`, 2); return v; };
@@ -76,8 +77,10 @@ if (WHOAMI) { console.log(`verified sender: ${me.userPrincipalName}`); process.e
 const { scope: SCOPE, why: WHY } = currentScope();
 if (SCOPE === 'none') fail(`blocked: this run's send grant is not valid (${WHY}); nothing sent`, 3);
 const LIMITED = SCOPE !== 'full', ALLOWED = allowedChats(SCOPE);
+// A teammate lane (chats:) may also reach internal teammates and Beings (team-scope.mjs); routine and owner-only may not.
+const TEAM = SCOPE.startsWith('chats:') ? teamConfig() : { on: false };
 if (LIMITED && GROUP) fail(`blocked: ${SCOPE.split(':')[0]} scope cannot create group chats`, 3);
-if (LIMITED && !CHAT_ID && RECIPIENT !== OWNER) fail(`blocked: ${SCOPE.split(':')[0]} scope (recipient ${RECIPIENT})`, 3);
+if (LIMITED && !CHAT_ID && RECIPIENT !== OWNER && !teamRecipient(RECIPIENT, TEAM)) fail(`blocked: ${SCOPE.split(':')[0]} scope (recipient ${RECIPIENT})`, 3);
 
 let content = readFileSync(0, 'utf8');
 const member = (upn) => ({ '@odata.type': '#microsoft.graph.aadUserConversationMember', roles: ['owner'], 'user@odata.bind': `https://graph.microsoft.com/v1.0/users('${upn}')` });
@@ -96,10 +99,12 @@ try {
     chat ??= await g('/chats', { body: { chatType: 'oneOnOne', members: [me.userPrincipalName, RECIPIENT].map(member) } });
   }
   const getMembers = async () => (members ??= chat.chatType === 'oneOnOne' ? (await g(`/chats/${chat.id}/members`)).value || [] : []);
-  // Scoped runs may post only to their listed chats or to the owner's 1:1 with the Being.
+  // Scoped runs may post only to their listed chats, the owner's 1:1 with the Being, or (teammate lane) internal chats.
   if (LIMITED && !ALLOWED.includes(chat.id)) {
     const ms = await getMembers();
-    if (!(isOwnerDm(chat, ms, OWNER) && ms.some((x) => x.userId === me.id))) fail(`blocked: ${SCOPE.split(':')[0]} scope (target ${chat.id})`, 3);
+    const ownerDm = isOwnerDm(chat, ms, OWNER) && ms.some((x) => x.userId === me.id);
+    const internal = TEAM.on && teamChat(chat, chat.chatType === 'group' ? (await g(`/chats/${chat.id}/members`)).value || [] : ms, me, TEAM);
+    if (!ownerDm && !internal) fail(`blocked: ${SCOPE.split(':')[0]} scope (target ${chat.id})`, 3);
   }
   if (docsIndexOn()) await getMembers().catch(() => (members = []));
 } catch (e) { fail(`cannot resolve chat: ${e.message}`); }

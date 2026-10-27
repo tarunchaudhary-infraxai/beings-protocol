@@ -64,7 +64,7 @@ them). `check` refuses unknown keys, non-boolean values, and `owner_chat = false
 | `owner_chat` | Teams chat with the owner (**required**) | Being | Low |
 | `claude` | Claude Code sessions and jobs | Being's own seat | — |
 | `memory` | Memory search (basic-memory) | Local | Low |
-| `teammate_chats` | Teams chats with teammates (own chat only) | Being | Low |
+| `teammate_chats` | Teams chats with teammates (own chat + internal colleagues/Beings; `BEING_TEAM_SEND`) | Being | Low |
 | `group_chats` | Group chats and channels | Being | Medium |
 | `being_mail` | The Being's own mail | Being | Medium |
 | `being_onedrive` | The Being's own OneDrive (share by name) | Being | Medium |
