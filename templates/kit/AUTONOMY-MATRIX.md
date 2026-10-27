@@ -6,10 +6,11 @@
 | Action | Owner's 1:1 | Teammate (1:1 or mention) | Background job | Enforced by |
 |---|---|---|---|---|
 | Acknowledge (react / short reply) | auto | auto | — | triage, `teams-ack.mjs` |
-| Answer, look up, review | yes | yes, reply in the same chat only | yes | per-run send grant `chats:<id>` |
-| Run, change, build or send anything with an effect outside the chat | yes | **ask owner** | only if the task says so | prompt rules + send scope |
+| Answer, look up, review | yes | yes, reply in the same chat | yes | per-run send grant `chats:<id>` |
+| Run, change, build or send anything with an effect outside the chat (other than messaging colleagues) | yes | **ask owner** | only if the task says so | prompt rules + send scope |
 | Use the owner's private memory or personal context | yes | **never**, not even as an inference | only if started from the owner lane | separate sessions, `team-fence.py` |
-| Message someone new / another chat | yes | **ask owner** | no | send scope (exit 3) |
+| Message a colleague or Being in the company (as the Being, only what the work needs) | yes | yes (`BEING_TEAM_SEND=tenant`) | yes | send scope: internal tenant only |
+| Message someone outside the company, or start a new group | yes | **ask owner** | no | send scope (exit 3) |
 | Email from the Being's mailbox | yes | **ask owner** | no | send scope (owner only) |
 | Read the owner's chats / mail | yes (read-only) | **never** | only if started from the owner lane | `owner-read`, `owner-mail` need an owner-lane grant |
 | Send as the owner | draft → owner types `send Dn` | never | never | `approve.mjs` only, re-checked in Graph |
