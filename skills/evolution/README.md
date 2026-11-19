@@ -96,4 +96,4 @@ result = spawn_agent("Do something", tool_set="my_tools")
 
 ## First Implementation
 
-Built for [DJ Treta](https://github.com/VeltriaAI/dj-treta) — an AI DJ Being that plays, produces, and evolves her music autonomously.
+Built for [DJ Treta](https://github.com/NaturNestAI-Labs/dj-treta) — an AI DJ Being that plays, produces, and evolves her music autonomously.
